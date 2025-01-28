@@ -108,6 +108,12 @@ int main() {
 	// Shader, model, and texture initialization
 	ew::Shader newShader = ew::Shader("assets/lit.vert", "assets/lit.frag");	// Shader
 	ew::Shader fullShader = ew::Shader("assets/full.vert", "assets/full.frag");	// Shader
+	ew::Shader inverseShader = ew::Shader("assets/inverse.vert", "assets/inverse.frag");	// Shader
+	ew::Shader grayscaleShader = ew::Shader("assets/grayscale.vert", "assets/grayscale.frag");	// Shader
+	ew::Shader blurShader = ew::Shader("assets/blur.vert", "assets/blur.frag");	// Shader
+	ew::Shader chromaticShader = ew::Shader("assets/blur.vert", "assets/chromatic.frag");	// Shader
+
+
 	ew::Model monkeyModel = ew::Model("assets/suzanne.obj");					// Model
 
 	GLuint brickTexture = ew::loadTexture("assets/brick_color.jpg");		// Texture
@@ -171,8 +177,8 @@ int main() {
 
 		render(newShader, monkeyModel);
 
-		fullShader.use();
-		fullShader.setInt("_MainTexture", 0);  // Texture unit 0
+		chromaticShader.use();
+		chromaticShader.setInt("_MainTexture", 0);  // Texture unit 0
 		glBindVertexArray(fullscreen_quad.vao);
 		glActiveTexture(GL_TEXTURE0);  // Activate texture unit 0
 		glBindTexture(GL_TEXTURE_2D, framebuffer.color0);  // Bind the framebuffer texture
@@ -180,9 +186,6 @@ int main() {
 
 		// Draw the UI
 		drawUI();
-
-	
-	
 
 		// Swap buffers
 		glfwSwapBuffers(window);
