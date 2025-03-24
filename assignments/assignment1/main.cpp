@@ -92,14 +92,14 @@ void render(ew::Shader& shader, ew::Model& model)
 
 
 static float quad_vertices[] = {
-	// pos (x, y) texcoord (u, v)
+//	  X		 Y	   U	 V
 	-1.0f,  1.0f, 0.0f, 1.0f,
 	-1.0f, -1.0f, 0.0f, 0.0f,
-		1.0f, -1.0f, 1.0f, 0.0f,
+	 1.0f, -1.0f, 1.0f, 0.0f,
 
 	-1.0f,  1.0f, 0.0f, 1.0f,
-		1.0f, -1.0f, 1.0f, 0.0f,
-		1.0f,  1.0f, 1.0f, 1.0f,
+	 1.0f, -1.0f, 1.0f, 0.0f,
+	 1.0f,  1.0f, 1.0f, 1.0f,
 };
 
 int main() {
@@ -112,7 +112,8 @@ int main() {
 	ew::Shader grayscaleShader = ew::Shader("assets/grayscale.vert", "assets/grayscale.frag");	// Shader
 	ew::Shader blurShader = ew::Shader("assets/blur.vert", "assets/blur.frag");	// Shader
 	ew::Shader chromaticShader = ew::Shader("assets/blur.vert", "assets/chromatic.frag");	// Shader
-
+	ew::Shader gammaShader = ew::Shader("assets/blur.vert", "assets/gamma.frag");	// Shader
+	ew::Shader filmGrainShader = ew::Shader("assets/blur.vert", "assets/filmGrain.frag");	// Shader
 
 	ew::Model monkeyModel = ew::Model("assets/suzanne.obj");					// Model
 
@@ -176,9 +177,13 @@ int main() {
 		glBindTexture(GL_TEXTURE_2D, brickTexture);  // Bind the texture
 
 		render(newShader, monkeyModel);
+		cameraController.move(window, &camera, deltaTime);
 
-		chromaticShader.use();
-		chromaticShader.setInt("_MainTexture", 0);  // Texture unit 0
+		newShader.use();
+		newShader.setInt("_MainTexture", 0);  // Texture unit 0
+		newShader.setFloat("_Time", deltaTime);
+		//filmGrainShader.setInt("_Intensity", 0.5);
+
 		glBindVertexArray(fullscreen_quad.vao);
 		glActiveTexture(GL_TEXTURE0);  // Activate texture unit 0
 		glBindTexture(GL_TEXTURE_2D, framebuffer.color0);  // Bind the framebuffer texture
@@ -194,7 +199,7 @@ int main() {
 	printf("Shutting down...");
 }
 
-//jayden added
+
 void resetCamera(ew::Camera* camera, ew::CameraController* controller)
 {
 	// Reset position
@@ -224,7 +229,7 @@ void drawUI() {
 		ImGui::SliderFloat("Shininess", &material.Shininess, 2.0f, 1024.0f);
 
 	}
-	ImGui::Image((ImTextureID)(intptr_t)framebuffer.color0, ImVec2(800, 600));
+	ImGui::Image((ImTextureID)(intptr_t)framebuffer.color0, ImVec2(800, 600), ImVec2(0, 1), ImVec2(1, 0));
 
 	ImGui::End();
 
