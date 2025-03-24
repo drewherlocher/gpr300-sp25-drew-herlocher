@@ -82,14 +82,16 @@ void main() {
     vec3 specular = _Material.Ks * spec * vec3(1.0);
     
     // Shadow calculation
-    float bias = max(_MaxBias * (1.0 - dot(normal, lightDir)), _MinBias);
+    float bias = (1.0 - dot(normal, lightDir));
     float shadow = calculateShadow(fragPosLightSpace, bias);
     
     // Combine lighting components
-    vec3 lighting = ambient + (1.0 - shadow) * (diffuse + specular);
+    vec3 lighting = (diffuse + specular);
+    lighting *= 1.0 - shadow;
+    lighting += ambient;
     vec3 final = lighting * albedo;
-    
+ //  final = final + vec3(texture(_ShadowMap, fragTexCoord).r);
     // Final color
-
-FragColor = vec4(vec3(texture(_ShadowMap, fragTexCoord).r), 1.0);
+    FragColor = vec4(final, 1.0);
+   // FragColor = vec4(vec3(texture(_ShadowMap, fragTexCoord).r), 1.0);
 }

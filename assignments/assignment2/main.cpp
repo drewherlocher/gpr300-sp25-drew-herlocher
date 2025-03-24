@@ -47,9 +47,9 @@ struct DirectionalLight {
     float intensity = 1.0f;
 
     // Shadow mapping parameters
-    float minBias = 0.0005f;
-    float maxBias = 0.005f;
-    float softness = 1.0f;
+    float minBias = 0.001f;
+    float maxBias = 0.01f;
+    float softness = 0.0f;
 } directionalLight;
 
 struct ShadowMap {
@@ -101,15 +101,15 @@ void resetCamera(ew::Camera* camera, ew::CameraController* controller) {
 
 glm::mat4 calculateLightSpaceMatrix() {
     float near = 1.0f;
-    float far = 7.5f;
+    float far = 15.0f;
     float size = 5.0f;
 
-    glm::mat4 lightProjection = glm::ortho(-size, size, -size, size, near, far);
+    glm::mat4 lightProjection = glm::perspective(glm::radians(45.0f), 1.0f, near, far);
 
     glm::mat4 lightView = glm::lookAt(
         -directionalLight.direction * 5.0f,
         glm::vec3(0.0f),
-        glm::vec3(0.0f, 1.0f, 0.0f)
+        glm::vec3(1.0f, 1.0f, 0.0f)
     );
 
     return lightProjection * lightView;
@@ -119,7 +119,7 @@ void renderShadowMap(ew::Shader& depthShader, ew::Model& monkeyModel, ew::Mesh& 
     glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
     glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
     glClear(GL_DEPTH_BUFFER_BIT);
-    glCullFace(GL_FRONT);
+    glCullFace(GL_BACK);
 
     glm::mat4 lightSpaceMatrix = calculateLightSpaceMatrix();
 
@@ -133,8 +133,8 @@ void renderShadowMap(ew::Shader& depthShader, ew::Model& monkeyModel, ew::Mesh& 
     // Render plane
     glm::mat4 planeModel = glm::mat4(1.0f);
     depthShader.setMat4("_Model", planeModel);
-    planeMesh.draw();
-	glCullFace(GL_BACK);
+    //planeMesh.draw();
+	//glCullFace(GL_BACK);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
