@@ -155,12 +155,6 @@ void main() {
         totalLight += lightContrib;
     }
     
-    // If point lights are active, add a slight color tint to visualize
-    if(_PointLightCount > 0) {
-        // Optional: Add a debug visualization of point light contribution
-        totalLight += pointLightContribution * 0.2;
-    }
-    
     // Final output
     FragColor = vec4(totalLight, 1.0);
 }

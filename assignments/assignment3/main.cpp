@@ -48,6 +48,7 @@ struct PointLight {
 };
 const int MAX_POINT_LIGHTS = 64;
 PointLight pointLights[MAX_POINT_LIGHTS];
+int currentPointLightCount = 4;
 
 // Define a single FrameBuffer struct that includes all needed members
 struct FrameBuffer {
@@ -290,27 +291,35 @@ void drawUI() {
     }
     ImGui::End();
 
-    ImGui::Begin("Lighting Settings");
+    ImGui::Begin("Shadow Mapping Settings");
 
     if (ImGui::Button("Reset Camera")) {
         resetCamera(&camera, &cameraController);
     }
 
-    // Directional Light Section
-    if (ImGui::CollapsingHeader("Directional Light")) {
+    if (ImGui::CollapsingHeader("Light Direction")) {
         ImGui::SliderFloat3("Direction", glm::value_ptr(directionalLight.direction), -1.0f, 1.0f);
         directionalLight.direction = glm::normalize(directionalLight.direction);
-
-        ImGui::SliderFloat("Intensity", &directionalLight.intensity, 0.0f, 2.0f);
-        ImGui::ColorEdit3("Color", glm::value_ptr(directionalLight.color));
     }
 
-    // Point Lights Section
-    if (ImGui::CollapsingHeader("Point Lights")) {
-        static int pointLightCount = 4;
-        ImGui::SliderInt("Number of Lights", &pointLightCount, 0, MAX_POINT_LIGHTS);
+    if (ImGui::CollapsingHeader("Shadow Settings")) {
+        ImGui::SliderFloat("Min Bias", &directionalLight.minBias, 0.0001f, 0.01f);
+        ImGui::SliderFloat("Max Bias", &directionalLight.maxBias, 0.0001f, 0.1f);
+        ImGui::SliderFloat("Shadow Softness", &directionalLight.softness, 0.0f, 2.0f);
+    }
 
-        for (int i = 0; i < pointLightCount; i++) {
+    if (ImGui::CollapsingHeader("Material Properties")) {
+        ImGui::SliderFloat("Ambient", &material.Ka, 0.0f, 1.0f);
+        ImGui::SliderFloat("Diffuse", &material.Kd, 0.0f, 1.0f);
+        ImGui::SliderFloat("Specular", &material.Ks, 0.0f, 1.0f);
+        ImGui::SliderFloat("Shininess", &material.Shininess, 2.0f, 256.0f);
+    }
+
+    if (ImGui::CollapsingHeader("Point Lights")) {
+        // Ensure the slider doesn't exceed MAX_POINT_LIGHTS
+        ImGui::SliderInt("Number of Lights", &currentPointLightCount, 0, MAX_POINT_LIGHTS);
+
+        for (int i = 0; i < currentPointLightCount; i++) {
             ImGui::PushID(i);
 
             // Create a collapsing header for each point light
@@ -331,25 +340,10 @@ void drawUI() {
             ImGui::PopID();
 
             // Optional: Separator between lights
-            if (i < pointLightCount - 1) {
+            if (i < currentPointLightCount - 1) {
                 ImGui::Separator();
             }
         }
-    }
-
-    // Shadow Settings Section
-    if (ImGui::CollapsingHeader("Shadow Settings")) {
-        ImGui::SliderFloat("Min Bias", &directionalLight.minBias, 0.0001f, 0.01f);
-        ImGui::SliderFloat("Max Bias", &directionalLight.maxBias, 0.0001f, 0.1f);
-        ImGui::SliderFloat("Shadow Softness", &directionalLight.softness, 0.0f, 2.0f);
-    }
-
-    // Material Properties Section
-    if (ImGui::CollapsingHeader("Material Properties")) {
-        ImGui::SliderFloat("Ambient", &material.Ka, 0.0f, 1.0f);
-        ImGui::SliderFloat("Diffuse", &material.Kd, 0.0f, 1.0f);
-        ImGui::SliderFloat("Specular", &material.Ks, 0.0f, 1.0f);
-        ImGui::SliderFloat("Shininess", &material.Shininess, 2.0f, 256.0f);
     }
 
     // Shadow map debug view
@@ -555,16 +549,42 @@ int main() {
         deferredShader.setInt("_ShadowMap", 3);
 
 
-        deferredShader.setInt("_PointLightCount", MAX_POINT_LIGHTS);
+        deferredShader.setInt("_PointLightCount", currentPointLightCount);
         // Initialize point lights
-        for (int i = 0; i < MAX_POINT_LIGHTS; i++) {
-            //Creates prefix "_PointLights[0]." etc
+        const float GRID_OFFSET = SPACING * (GRID_SIZE / 2.0f);
+
+        for (int i = 0; i < currentPointLightCount; i++) {
+            // Spread lights around the grid based on current light count
+            switch (i % 4) {
+            case 0:
+                pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, -GRID_OFFSET);
+                pointLights[i].color = glm::vec4(1.0f, 0.3f, 0.3f, 2.0f);  // Red
+                break;
+            case 1:
+                pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, -GRID_OFFSET);
+                pointLights[i].color = glm::vec4(0.3f, 1.0f, 0.3f, 2.0f);  // Green
+                break;
+            case 2:
+                pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, GRID_OFFSET);
+                pointLights[i].color = glm::vec4(0.3f, 0.3f, 1.0f, 2.0f);  // Blue
+                break;
+            case 3:
+                pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, GRID_OFFSET);
+                pointLights[i].color = glm::vec4(1.0f, 1.0f, 0.3f, 2.0f);  // Yellow
+                break;
+            }
+
+            // Set high radius to cover the entire grid
+            pointLights[i].radius = 15.0f;
+        }
+
+        // Set point light uniforms only for the current number of lights
+        for (int i = 0; i < currentPointLightCount; i++) {
             std::string prefix = "_PointLights[" + std::to_string(i) + "].";
             deferredShader.setVec3(prefix + "position", pointLights[i].position);
             deferredShader.setFloat(prefix + "radius", pointLights[i].radius);
             deferredShader.setVec4(prefix + "color", pointLights[i].color);
         }
-
 
 
         glBindTextureUnit(0, gBuffer.colorBuffers[0]);  // Position
