@@ -6,7 +6,6 @@ layout(location = 0) in vec3 vPos;	  //Vertex position in model space
 layout(location = 1) in vec3 vNormal; //Vertex position in model space
 layout(location = 2) in vec2 vTextureCoord; //Vertex texture coordinate (UV)
 
-//out vec3 Normal; //Output to next shader WE SWITCHED THIS FOR THIS::
 out Surface
 {
 	//vec3 Normal; ADDED FOR DIFFUSE
