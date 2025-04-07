@@ -410,9 +410,13 @@ int main() {
     ew::Shader gBufferShader = ew::Shader("assets/lit.vert", "assets/geometryPass.frag");
     ew::Shader deferredShader = ew::Shader("assets/fsTriangle.vert", "assets/deferredLit.frag");
 
+    ew::Shader lightOrbShader = ew::Shader("assets/lightOrb.vert", "assets/lightOrb.frag");
+
     // Model and texture loading
     ew::Model monkeyModel("assets/suzanne.obj");
     GLuint brickTexture = ew::loadTexture("assets/brick_color.jpg");
+
+    ew::Mesh sphereMesh = ew::createSphere(1.0f, 8);
 
     // Camera setup
     camera.position = glm::vec3(0.0f, 10.0f, 20.0f);
@@ -493,11 +497,10 @@ int main() {
         for (size_t i = 0; i < monkeyTransforms.size(); i++) {
             // Alternate rotation directions based on position in grid
             float rotationDirection = ((i % 2) == 0) ? 1.0f : -1.0f;
-            float rotationSpeed = 0.5f + (i % 4) * 0.2f; // Varied rotation speeds
 
             monkeyTransforms[i].rotation = glm::rotate(
                 monkeyTransforms[i].rotation,
-                deltaTime * rotationDirection * rotationSpeed,
+                deltaTime * rotationDirection,
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
         }
@@ -558,25 +561,26 @@ int main() {
             switch (i % 4) {
             case 0:
                 pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, -GRID_OFFSET);
-                pointLights[i].color = glm::vec4(1.0f, 0.3f, 0.3f, 2.0f);  // Red
+                pointLights[i].color = glm::vec4(1.0f, 0.3f, 0.3f, 1.0f);  // Red
                 break;
             case 1:
                 pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, -GRID_OFFSET);
-                pointLights[i].color = glm::vec4(0.3f, 1.0f, 0.3f, 2.0f);  // Green
+                pointLights[i].color = glm::vec4(0.3f, 1.0f, 0.3f, 1.0f);  // Green
                 break;
             case 2:
                 pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, GRID_OFFSET);
-                pointLights[i].color = glm::vec4(0.3f, 0.3f, 1.0f, 2.0f);  // Blue
+                pointLights[i].color = glm::vec4(0.3f, 0.3f, 1.0f, 1.0f);  // Blue
                 break;
             case 3:
                 pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, GRID_OFFSET);
-                pointLights[i].color = glm::vec4(1.0f, 1.0f, 0.3f, 2.0f);  // Yellow
+                pointLights[i].color = glm::vec4(1.0f, 1.0f, 0.3f, 1.0f);  // Yellow
                 break;
             }
 
             // Set high radius to cover the entire grid
             pointLights[i].radius = 15.0f;
         }
+
 
         // Set point light uniforms only for the current number of lights
         for (int i = 0; i < currentPointLightCount; i++) {
@@ -585,7 +589,6 @@ int main() {
             deferredShader.setFloat(prefix + "radius", pointLights[i].radius);
             deferredShader.setVec4(prefix + "color", pointLights[i].color);
         }
-
 
         glBindTextureUnit(0, gBuffer.colorBuffers[0]);  // Position
         glBindTextureUnit(1, gBuffer.colorBuffers[1]);  // Normal
@@ -604,6 +607,38 @@ int main() {
 
         // Use a simple shader to render the final image to the screen
         // For simplicity, we're using the default screen rendering
+        // Blit depth buffer from G-Buffer to framebuffer
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer.fbo);
+        glBlitFramebuffer(
+            0, 0, screenWidth, screenHeight, 0, 0, screenWidth, screenHeight,
+            GL_DEPTH_BUFFER_BIT, GL_NEAREST
+        );
+
+        // Draw light orbs
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_CULL_FACE);
+
+        lightOrbShader.use();
+        lightOrbShader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
+
+        for (int i = 0; i < currentPointLightCount; i++) {
+            glm::mat4 m = glm::mat4(1.0f);
+            m = glm::translate(m, pointLights[i].position);
+            m = glm::scale(m, glm::vec3(0.5f));
+
+            lightOrbShader.setMat4("_Model", m);
+
+            // Use RGB components and normalize intensity
+            glm::vec3 lightColor = glm::vec3(pointLights[i].color);
+            float intensity = pointLights[i].color.a;
+            lightOrbShader.setVec3("_Color", lightColor * intensity);
+
+            sphereMesh.draw();
+        }
+
+        // Blit final image to screen
         glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glBlitFramebuffer(0, 0, framebuffer.width, framebuffer.height,
