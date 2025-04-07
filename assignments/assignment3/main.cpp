@@ -19,7 +19,6 @@
 #include <ew/cameraController.h>
 #include <ew/texture.h>
 #include <ew/mesh.h>
-// Include vector for transforms
 #include <vector>
 #include <ew/procGen.h>
 
