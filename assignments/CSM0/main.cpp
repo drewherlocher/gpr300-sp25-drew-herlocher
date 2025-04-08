@@ -31,7 +31,7 @@ void definePipline();
 void initDetails();
 glm::mat4 calculateLightSpaceMatrix();
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time);
-void shadowPass(ew::Shader shadowPass, ew::Model model, float time);
+void shadowPass(ew::Shader shadowPass, ew::Model model);
 GLenum glCheckError_(const char* file, int line)
 {
 	GLenum errorCode;
@@ -155,7 +155,7 @@ int main()
 		deltaTime = time - prevFrameTime;
 		prevFrameTime = time;
 
-		shadowPass(shadow_pass, monkeyModel, time);
+		shadowPass(shadow_pass, monkeyModel);
 
 		render(blinnPhongShader, monkeyModel, brickTexture, time);
 
@@ -197,6 +197,12 @@ void initDetails()
 
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 {
+	if (light.rotating)
+	{
+		const auto rym = glm::rotate((float)time, glm::vec3(0.0f, 1.0f, 0.0f));
+		light.position = rym * light_orbit_radius;
+	}
+
 	const auto camera_view_proj = camera.projectionMatrix() * camera.viewMatrix();
 
 	//render lighting
@@ -246,14 +252,8 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	plane.draw();
 }
 
-void shadowPass(ew::Shader shadowPass, ew::Model model, float time)
+void shadowPass(ew::Shader shadowPass, ew::Model model)
 {
-	if (light.rotating)
-	{
-		const auto rym = glm::rotate((float)time, glm::vec3(0.0f, 1.0f, 0.0f));
-		light.position = rym * light_orbit_radius;
-	}
-
 	//shadow pass
 	glBindFramebuffer(GL_FRAMEBUFFER, depthBuffer.fbo);
 	{

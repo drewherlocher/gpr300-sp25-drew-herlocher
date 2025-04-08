@@ -39,11 +39,10 @@ in vec2 vs_texcoord;
 float shadow_calculation(vec4 frag_pos_lightspace, vec3 normal, vec3 lightDir)
 {
 	float shadow = 0.0;
-
-	//perspective divide for normalized device coords
-	//transform to range [0, 1] for sampling
 	vec3 proj_coords = frag_pos_lightspace.xyz / frag_pos_lightspace.w;
 	proj_coords = (proj_coords * 0.5) + 0.5;
+
+	float current_depth = proj_coords.z;	
 
 	if(use_pcf)
 	{
@@ -52,21 +51,20 @@ float shadow_calculation(vec4 frag_pos_lightspace, vec3 normal, vec3 lightDir)
 			for(int y = -1; y <= 1; ++y)
 			{
 				vec2 texelSize = 1.0 / textureSize(shadow_map, 0);
-				float closest_depth = texture(shadow_map, proj_coords.xy + vec2(x, y) * texelSize).r;	//aka light_depth
+				float pcf_depth = texture(shadow_map, proj_coords.xy + vec2(x, y) * texelSize).r;	//aka light_depth
 
-				float current_depth = proj_coords.z;							//aka camera_depth
-				shadow += ((current_depth - bias) > closest_depth) ? 1.0 : 0.0;
-
-				shadow /= 9.0f;
+				shadow += ((current_depth - bias) > pcf_depth) ? 1.0 : 0.0;
 			}
 		}
+		shadow /= 9.0;
+
 	}
 	else
 	{
 		float closest_depth = texture(shadow_map, proj_coords.xy).r;	//aka light_depth
-		float current_depth = proj_coords.z;							//aka camera_depth
 		shadow += ((current_depth - bias) > closest_depth) ? 1.0 : 0.0;
 	}
+
 	return shadow;
 }
 
@@ -83,7 +81,7 @@ vec3 blinnphong(vec3 normal, vec3 frag_pos)
 
 	//light components
 	vec3 diffuse = ndotL * _Material.diffuse; 
-	vec3 specular = pow(ndotH, _Material.shininess * 128.0) * _Material.specular;
+	vec3 specular = pow(ndotH, _Material.shininess) * _Material.specular;
 
 	return (diffuse + specular);
 }
