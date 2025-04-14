@@ -52,7 +52,7 @@ GLenum glCheckError_(const char* file, int line)
 }
 #define glCheckError() glCheckError_(__FILE__, __LINE__) 
 
-//Global state
+// Global state
 int screenWidth = 1080;
 int screenHeight = 720;
 float prevFrameTime;
