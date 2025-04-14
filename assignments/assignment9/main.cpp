@@ -19,7 +19,6 @@
 #include <ew/cameraController.h>
 #include <ew/texture.h>
 #include <ew/mesh.h>
-// Include vector for transforms
 #include <vector>
 #include <ew/procGen.h>
 
@@ -38,7 +37,6 @@ GLFWwindow* initWindow(const char* title, int width, int height);
 void drawUI();
 void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeMesh);
 void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh, GLuint texture);
-void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model);
 void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh);
 
 struct PointLight {
@@ -105,8 +103,7 @@ ew::Camera camera;
 ew::CameraController cameraController;
 std::vector<ew::Transform> monkeyTransforms;
 ew::Transform planeTransform;
-//  ew::Mesh plane;
-ew::Mesh sphereMesh;
+ew::Mesh plane;
 
 // G-Buffer
 FrameBuffer gBuffer;
@@ -149,7 +146,7 @@ struct ShadowMap {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTexture, 0);
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
-            
+
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             printf("ERROR: Framebuffer is not complete!\n");
         }
@@ -157,16 +154,6 @@ struct ShadowMap {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 } shadowMap;
-
-struct HeightMap {
-    int width, height, b;
-	unsigned char* data;
-	HeightMap(const char* filename) { 
-    }
-	~HeightMap() {
-		delete[] data;
-	}
-};
 
 // Material for rendering
 struct Material {
@@ -223,7 +210,7 @@ void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeM
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh, ew::Mesh& sphereMesh) {
+void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh) {
     shader.use();
 
     // Camera and view
@@ -427,7 +414,7 @@ int main() {
     ew::Model monkeyModel("assets/suzanne.obj");
     GLuint brickTexture = ew::loadTexture("assets/brick_color.jpg");
 
-    
+    ew::Mesh sphereMesh = ew::createSphere(1.0f, 8);
 
     // Camera setup
     camera.position = glm::vec3(0.0f, 10.0f, 20.0f);
