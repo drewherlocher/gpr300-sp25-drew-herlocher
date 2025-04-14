@@ -37,7 +37,6 @@ GLFWwindow* initWindow(const char* title, int width, int height);
 void drawUI();
 void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeMesh);
 void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh, GLuint texture);
-void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model);
 void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh);
 
 struct PointLight {
