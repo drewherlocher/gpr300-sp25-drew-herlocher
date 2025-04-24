@@ -1,12 +1,23 @@
 #version 450
 
+//constants
+const int NUM_CASCADES = 3;
+
+//colors for visualizing cascades
+const vec3 CASCADE_COLORS[NUM_CASCADES] = vec3[]
+(
+    vec3(1.0, 0.0, 0.0),    //red
+    vec3(0.0, 1.0, 0.0),    //green
+    vec3(0.0, 0.0, 1.0)     //blue
+);
+
 //structs
 struct Material
 {
 	vec3 ambient;		 //Ambient	(0-1)
 	vec3 diffuse;		 //Diffuse  (0-1)
 	vec3 specular;		 //Specular (0-1)
-	float shininess; //specular highlight
+	float shininess;	 //specular highlight
 }; 
 struct Light
 {
@@ -15,57 +26,89 @@ struct Light
 	bool rotating;
 };
 
-//outs
+//out attributes
 out vec4 FragColor; 
 
 //uniforms
-uniform sampler2D shadow_map;
+uniform sampler2D shadow_maps[NUM_CASCADES];
+uniform float cascade_splits[NUM_CASCADES];
+uniform mat4 light_space_matrices[NUM_CASCADES];
+
 uniform vec3 camera_pos;
 
 uniform float bias;
-uniform float maxBias;
-uniform float minBias;
+uniform float max_bias;
+uniform float min_bias;
+
 uniform bool use_pcf;
+uniform bool show_cascades;
 
 uniform Material _Material;
 uniform Light _Light;
 
-//ins
+//in attributes
 in vec3 vs_frag_world_position;
-in vec4 vs_frag_light_position;
 in vec3 vs_normal;
 in vec2 vs_texcoord;
 
-float shadow_calculation(vec4 frag_pos_lightspace, vec3 normal, vec3 lightDir)
+int getCascadeIndex(float viewDepth) 
 {
-	float shadow = 0.0;
-	vec3 proj_coords = frag_pos_lightspace.xyz / frag_pos_lightspace.w;
-	proj_coords = (proj_coords * 0.5) + 0.5;
+    int cascade_index = NUM_CASCADES - 1;
 
-	float current_depth = proj_coords.z;	
+    for (int i = 0; i < NUM_CASCADES - 1; i++) 
+    {
+        if (viewDepth < cascade_splits[i]) 
+        {
+            cascade_index = i;
+            break;
+        }
+    }
+    return cascade_index;
+}
 
-	if(use_pcf)
-	{
-		for(int x = -1; x <= 1; ++x)
-		{
-			for(int y = -1; y <= 1; ++y)
-			{
-				vec2 texelSize = 1.0 / textureSize(shadow_map, 0);
-				float pcf_depth = texture(shadow_map, proj_coords.xy + vec2(x, y) * texelSize).r;	//aka light_depth
+float shadow_calculation(vec3 frag_pos, vec3 normal, vec3 light_dir, int cascade_index)
+{
+    //get light space pos
+    vec4 frag_pos_light_space = light_space_matrices[cascade_index] * vec4(frag_pos, 1.0);
+    
+    //calc shadow
+    float shadow = 0.0;
+    vec3 proj_coords = frag_pos_light_space.xyz / frag_pos_light_space.w;
+    proj_coords = proj_coords * 0.5 + 0.5;
+    
+    //check if in shadow map bounds
+    if (proj_coords.z > 1.0) {
+        return 0.0;
+    }
+    
+    //calc dynamic bias based on light angle
+    float cosTheta = max(dot(normal, light_dir), 0.0);
+    float actual_bias = max(min_bias * (1.0 - cosTheta), bias);
+    actual_bias = min(actual_bias, max_bias);
+    
+    //apply PCF filtering if enabled
+    if (use_pcf) 
+    {
+        vec2 texel_size = 1.0 / textureSize(shadow_maps[cascade_index], 0);
 
-				shadow += ((current_depth - bias) > pcf_depth) ? 1.0 : 0.0;
-			}
-		}
-		shadow /= 9.0;
+        for (int x = -1; x <= 1; ++x) 
+        {
+            for (int y = -1; y <= 1; ++y) 
+            {
+                float pcf_depth = texture(shadow_maps[cascade_index], proj_coords.xy + vec2(x, y) * texel_size).r;
+                shadow += ((proj_coords.z - actual_bias) > pcf_depth) ? 1.0 : 0.0;
+            }
+        }
 
-	}
-	else
-	{
-		float closest_depth = texture(shadow_map, proj_coords.xy).r;	//aka light_depth
-		shadow += ((current_depth - bias) > closest_depth) ? 1.0 : 0.0;
-	}
-
-	return shadow;
+        shadow /= 9.0;
+    } 
+    else 
+    {
+        float closest_depth = texture(shadow_maps[cascade_index], proj_coords.xy).r;
+        shadow = ((proj_coords.z - actual_bias) > closest_depth) ? 1.0 : 0.0;
+    }
+    
+    return shadow;
 }
 
 vec3 blinnphong(vec3 normal, vec3 frag_pos)
@@ -92,7 +135,13 @@ void main()
 	vec3 lighting = blinnphong(normal, vs_frag_world_position);
 	vec3 lightDir = normalize(_Light.positon - vs_frag_world_position);
 
-	float shadow = shadow_calculation(vs_frag_light_position, normal, lightDir);
+    //view space depth
+	vec4 view_pos = inverse(transpose(mat4(1.0))) * vec4(vs_frag_world_position, 1.0);
+	float view_depth = abs(view_pos.z);
+
+    int cascade_index = getCascadeIndex(view_depth);
+
+	float shadow = shadow_calculation(vs_frag_world_position, normal, lightDir, cascade_index);
 
 	lighting *= (1.0 - shadow);
 	lighting += vec3(1.0) * _Material.ambient;
@@ -100,5 +149,13 @@ void main()
 
 	vec3 obj_color = normal * 0.5 + 0.5;
 
-	FragColor = vec4(obj_color * lighting, 1.0);
+	//visualize cascades
+	if (show_cascades) 
+	{
+		FragColor = vec4(obj_color * lighting * CASCADE_COLORS[cascade_index], 1.0);
+	} 
+	else 
+	{
+		FragColor = vec4(obj_color * lighting, 1.0);
+	}
 }

@@ -29,7 +29,12 @@ void drawUI();
 void initCamera();
 void definePipline();
 void initDetails();
-glm::mat4 calculateLightSpaceMatrix();
+//glm::mat4 calculateLightSpaceMatrix();
+std::vector<glm::mat4> calculateLightSpaceMatrices();
+glm::mat4 calculateLightSpaceWithTexelSnapping(glm::mat4 lightView, glm::vec3 center, float texelSize);
+
+void calculateCascadeSplits();
+std::vector<glm::vec4> calculateFrustumCorners(float nearSplit, float farSplit);
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time);
 void shadowPass(ew::Shader shadowPass, ew::Model model);
 GLenum glCheckError_(const char* file, int line)
@@ -52,17 +57,22 @@ GLenum glCheckError_(const char* file, int line)
 }
 #define glCheckError() glCheckError_(__FILE__, __LINE__) 
 
-// Global state
+//global state
 int screenWidth = 1080;
 int screenHeight = 720;
 float prevFrameTime;
 float deltaTime;
 
+//CSM constants
+const int NUM_CASCADES = 3;
+float cascadeSplits[NUM_CASCADES];
+std::vector<glm::mat4> lightSpaceMatrices;
+static glm::vec4 light_orbit_radius = { 2.0f, 2.0f, -2.0f, 1.0f };
+
 ew::Camera camera;	//our camera
 ew::CameraController cameraController;
 ew::Transform monkeyTransform;
 ew::Mesh plane;
-static glm::vec4 light_orbit_radius = { 2.0f, 2.0f, -2.0f, 1.0f };
 
 struct Material
 {
@@ -76,7 +86,7 @@ struct Light
 {
 	glm::vec3 color;
 	glm::vec3 position;
-	bool rotating;
+	bool rotating = false;
 }light;
 
 struct Debug
@@ -85,14 +95,16 @@ struct Debug
 	float bias = 0.005f;
 	float max_bias = 0.05;
 	float min_bias = 0.005;
-	bool cull_front = false;
-	bool use_pcf = false;
+	bool cull_front = true;
+	bool use_pcf = true;
+	bool show_cascades = true;
+	int cascade_to_view = 0;
 }debug;
 
 struct DepthBuffer
 {
 	GLuint fbo;
-	GLuint depthTexture;
+	GLuint depthTextures[NUM_CASCADES];
 
 	float width;
 	float height;
@@ -106,16 +118,23 @@ struct DepthBuffer
 			height = dHeight;
 
 			//depth attachment
-			glGenTextures(1, &depthTexture);
-			glBindTexture(GL_TEXTURE_2D, depthTexture);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, dWidth, dHeight, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthTexture, 0);
-			//glDrawBuffer(GL_NONE);
-			//glReadBuffer(GL_NONE);
+			glGenTextures(NUM_CASCADES, depthTextures);
+
+			//for each cascade
+			for (int i = 0; i < NUM_CASCADES; i++) 
+			{
+				glBindTexture(GL_TEXTURE_2D, depthTextures[i]);
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, dWidth, dHeight, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+				glDrawBuffer(GL_NONE);
+				glReadBuffer(GL_NONE);
+			}
+
+			//attach first texture for initial completeness check
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthTextures[0], 0);
 
 			GLenum fboStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 			if (fboStatus != GL_FRAMEBUFFER_COMPLETE)
@@ -146,6 +165,10 @@ int main()
 	definePipline();
 	initDetails();
 
+	//init cascades
+	calculateCascadeSplits();
+
+	//init depth buffer
 	depthBuffer.Initialize(screenWidth, screenHeight);
 
 	while (!glfwWindowShouldClose(window)) {
@@ -192,18 +215,22 @@ void initDetails()
 	plane.load(ew::createPlane(50.0f, 50.0f, 100));
 	light.position = glm::vec3(1.0f);
 	light.color = glm::vec3(0.5f, 0.5f, 0.5f);
-	light.rotating = true;
+	light.rotating = false;
 }
 
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 {
 	if (light.rotating)
 	{
-		const auto rym = glm::rotate((float)time, glm::vec3(0.0f, 1.0f, 0.0f));
+		const auto rym = glm::rotate(floor((float)time * 60.0f) / 60.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+		//const auto rym = glm::rotate((float)time, glm::vec3(0.0f, 1.0f, 0.0f));
 		light.position = rym * light_orbit_radius;
 	}
 
 	const auto camera_view_proj = camera.projectionMatrix() * camera.viewMatrix();
+
+	//update light space matrices
+	lightSpaceMatrices = calculateLightSpaceMatrices(); 
 
 	//render lighting
 	glViewport(0, 0, screenWidth, screenHeight);
@@ -215,18 +242,33 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	glCullFace(GL_BACK);
 	glEnable(GL_DEPTH_TEST);
 
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, depthBuffer.depthTexture);
+	// Activate texture units for shadow maps
+	for (int i = 0; i < NUM_CASCADES; i++) 
+	{
+		glActiveTexture(GL_TEXTURE0 + i);
+		glBindTexture(GL_TEXTURE_2D, depthBuffer.depthTextures[i]);
+	}
 
 	shader.use();
 
-	//samplers
-	shader.setInt("shadow_map", 0);
+	//shadow map samplers
+	for (int i = 0; i < NUM_CASCADES; i++) {
+		shader.setInt("shadow_maps[" + std::to_string(i) + "]", i);
+	}
+
+	//cascade splits
+	for (int i = 0; i < NUM_CASCADES; i++) {
+		shader.setFloat("cascade_splits[" + std::to_string(i) + "]", cascadeSplits[i]);
+	}
+
+	//light space matrices
+	for (int i = 0; i < NUM_CASCADES; i++) {
+		shader.setMat4("light_space_matrices[" + std::to_string(i) + "]", lightSpaceMatrices[i]);
+	}
 
 	//scene matrices
 	shader.setMat4("_Model", glm::mat4(1.0f));
 	shader.setMat4("_CameraViewProjection", camera_view_proj);
-	shader.setMat4("_LightViewProjection", calculateLightSpaceMatrix());
 	shader.setVec3("camera_pos", camera.position);
 
 	//material properties
@@ -244,11 +286,17 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	shader.setFloat("Min Bias", debug.min_bias);
 	shader.setFloat("Max Bias", debug.max_bias);
 	shader.setInt("use_pcf", debug.use_pcf);
+	shader.setInt("show_cascades", debug.show_cascades);
 
+	//close monkey
+	shader.setMat4("_Model", glm::translate(glm::vec3(0.0f, -3.0f, 0.0f)));
 	model.draw();
 
-	shader.setMat4("_Model", glm::translate(glm::vec3(0.0f, -2.0f, 0.0f)));
+	//far monkey
+	shader.setMat4("_Model", glm::translate(glm::vec3(0.0f, -3.0f, -20.0f)));
+	model.draw();
 
+	shader.setMat4("_Model", glm::translate(glm::vec3(0.0f, -4.0f, 0.0f)));
 	plane.draw();
 }
 
@@ -257,19 +305,45 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 	//shadow pass
 	glBindFramebuffer(GL_FRAMEBUFFER, depthBuffer.fbo);
 	{
+		//update light space matrices
+		lightSpaceMatrices = calculateLightSpaceMatrices(); 
+
 		glEnable(GL_CULL_FACE);
 		glEnable(GL_DEPTH_TEST);
-		glCullFace(GL_FRONT);
 
-		glViewport(0, 0, screenWidth, screenHeight);
+		if (debug.cull_front) 
+		{ 
+			glCullFace(GL_FRONT); 
+		}
+		else 
+		{
+			glCullFace(GL_BACK); 
+		}
 
-		//begin pass
-		glClear(GL_DEPTH_BUFFER_BIT);
+		//render shadow map for each cascade
+		for (int i = 0; i < NUM_CASCADES; i++) 
+		{
+			//attach texture
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthBuffer.depthTextures[i], 0);
 
-		shadowPass.use();
-		shadowPass.setMat4("_Model", glm::mat4(1.0f));
-		shadowPass.setMat4("_LightViewProjection", calculateLightSpaceMatrix());
-		model.draw();
+			glViewport(0, 0, depthBuffer.width, depthBuffer.height);
+			glClear(GL_DEPTH_BUFFER_BIT);
+
+			shadowPass.use();
+			shadowPass.setMat4("_LightViewProjection", lightSpaceMatrices[i]);
+
+			//close monkey
+			shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -3.0f, 0.0f)));
+			model.draw();
+			
+			//far monkey
+			shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -3.0f, -20.0f)));
+			model.draw();
+
+			//also render plane
+			shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -4.0f, 0.0f)));
+			plane.draw();
+		}
 
 		glCullFace(GL_BACK);
 		glCheckError();
@@ -277,12 +351,161 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-glm::mat4 calculateLightSpaceMatrix()
+glm::mat4 calculateLightSpaceWithTexelSnapping(glm::mat4 lightView, glm::vec3 center, float texelSize) 
 {
-	//const auto camera_view_proj = camera.projectionMatrix() * camera.viewMatrix();
-	const auto light_projection = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
-	const auto light_view = glm::lookAt(light.position, glm::vec3(0.0f), glm::vec3(0.0f, -1.0f, 0.0f));
-	return light_projection * light_view;
+	//world-space frustum center -> light space
+	glm::vec3 lightSpaceCenter = glm::vec3(lightView * glm::vec4(center, 1.0f));
+
+	//nearest texel -> stabilize shadows
+	lightSpaceCenter.x = std::floor(lightSpaceCenter.x / texelSize) * texelSize;
+	lightSpaceCenter.y = std::floor(lightSpaceCenter.y / texelSize) * texelSize;
+
+	//mmove to the snapped position
+	glm::mat4 texelSnappedTranslation = glm::translate(glm::mat4(1.0f), -lightSpaceCenter);
+
+	// return matrix
+	return texelSnappedTranslation * lightView;
+}
+
+std::vector<glm::mat4> calculateLightSpaceMatrices()
+{
+	std::vector<glm::mat4> matrices(NUM_CASCADES);
+
+	//calculate light space matrix for each cascade
+	for (int i = 0; i < NUM_CASCADES; i++) 
+	{
+		float nearSplit = (i == 0) ? 0.1f : cascadeSplits[i - 1];
+		float farSplit = cascadeSplits[i];
+
+		//frustum corners in view space
+		std::vector<glm::vec4> corners = calculateFrustumCorners(nearSplit, farSplit);
+
+		//view space -> world space
+		glm::mat4 invView = glm::inverse(camera.viewMatrix());
+		for (auto& corner : corners) 
+		{
+			corner = invView * corner;
+		}
+
+		//center of the frustrum
+		glm::vec3 center(0.0f);
+		for (const auto& corner : corners) 
+		{
+			center += glm::vec3(corner);
+		}
+		center /= corners.size();
+
+		//light view matrix LOOKING AT frustum center
+		glm::mat4 lightView = glm::lookAt
+		(
+			light.position,
+			center,
+			glm::vec3(0.0f, -1.0f, 0.0f)
+		);
+
+		//calc bounding box
+		float minX = std::numeric_limits<float>::max();
+		float maxX = std::numeric_limits<float>::lowest();
+		float minY = std::numeric_limits<float>::max();
+		float maxY = std::numeric_limits<float>::lowest();
+		float minZ = std::numeric_limits<float>::max();
+		float maxZ = std::numeric_limits<float>::lowest();
+
+		for (const auto& corner : corners) 
+		{
+			glm::vec4 lightCorner = lightView * corner;
+			minX = std::min(minX, lightCorner.x);
+			maxX = std::max(maxX, lightCorner.x);
+			minY = std::min(minY, lightCorner.y);
+			maxY = std::max(maxY, lightCorner.y);
+			minZ = std::min(minZ, lightCorner.z);
+			maxZ = std::max(maxZ, lightCorner.z);
+		}
+
+		//calc dimensions
+		float width = maxX - minX;
+		float height = maxY - minY;
+
+		//calc texel size
+		float texelSize = width / depthBuffer.width;
+
+		//THIS IS WHERE WE CALL THE TEXEL SNAPPING FUNCTION
+		lightView = calculateLightSpaceWithTexelSnapping(lightView, center, texelSize);
+
+		//add padding to bounding box
+		const float zMultiplier = 10.0f;
+		minZ *= zMultiplier;
+		maxZ *= zMultiplier;
+
+		//orthographic projection
+		glm::mat4 lightProjection = glm::ortho
+		(
+			minX, maxX,
+			minY, maxY,
+			-maxZ, -minZ
+		);
+
+		matrices[i] = lightProjection * lightView;
+	}
+
+	return matrices;
+}
+
+void calculateCascadeSplits() 
+{
+	float nearPlane = 0.1f;
+	float farPlane = 100.0f;
+	float lambda = 0.75f;
+
+	//used for distribution
+	float ratio = farPlane / nearPlane;
+
+	//for each cascade
+	for (int i = 0; i < NUM_CASCADES; i++) 
+	{
+		//calc normalized position
+		float p = (i + 1) / float(NUM_CASCADES);
+
+		//calc uniform split distance
+		float uniform = nearPlane + (farPlane - nearPlane) * p;
+
+		//calc logarithmic split distance
+		float logarithmic = nearPlane * std::pow(ratio, p);
+
+		//mix uniform + logarithmic based on Lambda
+		cascadeSplits[i] = lambda * logarithmic + (1 - lambda) * uniform;
+	}
+}
+
+std::vector<glm::vec4> calculateFrustumCorners(float nearSplit, float farSplit) 
+{
+	std::vector<glm::vec4> corners(8);
+
+	//view space frustrum dimensions
+	const float aspect = camera.aspectRatio;
+	const float tanHalfFov = tan(glm::radians(camera.fov / 2.0f));
+
+	//height + widht of near plane
+	const float nearHeight = 2.0f * tanHalfFov * nearSplit;
+	const float nearWidth = nearHeight * aspect;
+
+	//height + width of far plane
+	const float farHeight = 2.0f * tanHalfFov * farSplit;
+	const float farWidth = farHeight * aspect;
+
+	//define near face corners in view space
+	corners[0] = glm::vec4(-nearWidth * 0.5f, -nearHeight * 0.5f, -nearSplit, 1.0f);
+	corners[1] = glm::vec4(nearWidth * 0.5f, -nearHeight * 0.5f, -nearSplit, 1.0f);
+	corners[2] = glm::vec4(nearWidth * 0.5f, nearHeight * 0.5f, -nearSplit, 1.0f);
+	corners[3] = glm::vec4(-nearWidth * 0.5f, nearHeight * 0.5f, -nearSplit, 1.0f);
+
+	//define far face corners in view space
+	corners[4] = glm::vec4(-farWidth * 0.5f, -farHeight * 0.5f, -farSplit, 1.0f);
+	corners[5] = glm::vec4(farWidth * 0.5f, -farHeight * 0.5f, -farSplit, 1.0f);
+	corners[6] = glm::vec4(farWidth * 0.5f, farHeight * 0.5f, -farSplit, 1.0f);
+	corners[7] = glm::vec4(-farWidth * 0.5f, farHeight * 0.5f, -farSplit, 1.0f);
+
+	return corners;
 }
 
 void definePipline()
@@ -321,8 +544,17 @@ void drawUI() {
 		ImGui::SliderFloat("Max Bias", &debug.max_bias, 0.0f, 0.1f);
 		ImGui::Checkbox("Culling Front", &debug.cull_front);
 		ImGui::Checkbox("Using PCF", &debug.use_pcf);
+		ImGui::Checkbox("Show Cascade Colors", &debug.show_cascades);
 		ImGui::Separator(); //depth image
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.depthTexture, ImVec2(256, 256));
+		
+		//slider to pick map
+		ImGui::Text("Cascade Shadow Maps:");
+		int selected_cascade = debug.cascade_to_view;
+		ImGui::SliderInt("Cascade to view", &selected_cascade, 0, NUM_CASCADES - 1);
+		debug.cascade_to_view = selected_cascade;
+
+		//display chosen cascade shadow map
+		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.depthTextures[debug.cascade_to_view], ImVec2(256, 256));
 	}
 	ImGui::Separator();
 	if (ImGui::CollapsingHeader("Lighting"))
