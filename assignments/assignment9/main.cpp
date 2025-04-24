@@ -13,17 +13,13 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <ew/shader.h>
-#include <ew/model.h>
 #include <ew/camera.h>
 #include <ew/transform.h>
 #include <ew/cameraController.h>
 #include <ew/texture.h>
 #include <ew/mesh.h>
 #include <vector>
-#include <ew/procGen.h>
-
-const int SHADOW_WIDTH = 2048;
-const int SHADOW_HEIGHT = 2048;
+#include <ew/external/stb_image.h>
 
 // Global state
 int screenWidth = 1080;
@@ -35,244 +31,27 @@ float deltaTime = 0.0f;
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 GLFWwindow* initWindow(const char* title, int width, int height);
 void drawUI();
-void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeMesh);
-void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh, GLuint texture);
-void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh);
-
-struct PointLight {
-    glm::vec3 position;
-    float radius;
-    glm::vec4 color;
-};
-const int MAX_POINT_LIGHTS = 64;
-PointLight pointLights[MAX_POINT_LIGHTS];
-int currentPointLightCount = 4;
-
-// Define a single FrameBuffer struct that includes all needed members
-struct FrameBuffer {
-    GLuint fbo;
-    GLuint colorBuffers[3]; // For GBuffer implementation
-    GLuint color0;          // For shadow frame buffer
-    GLuint color1;          // For shadow frame buffer
-    GLuint depth;           // For shadow frame buffer
-    unsigned int width;     // Buffer dimensions
-    unsigned int height;    // Buffer dimensions
-};
-
-FrameBuffer createGBuffer(unsigned int width, unsigned int height) {
-    FrameBuffer framebuffer;
-    framebuffer.width = width;
-    framebuffer.height = height;
-
-    glCreateFramebuffers(1, &framebuffer.fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
-
-    int formats[3] = {
-        GL_RGB32F, //0 = World Position 
-        GL_RGB16F, //1 = World Normal
-        GL_RGB16F  //2 = Albedo
-    };
-    //Create 3 color textures
-    for (size_t i = 0; i < 3; i++)
-    {
-        glGenTextures(1, &framebuffer.colorBuffers[i]);
-        glBindTexture(GL_TEXTURE_2D, framebuffer.colorBuffers[i]);
-        glTexStorage2D(GL_TEXTURE_2D, 1, formats[i], width, height);
-        //Clamp to border so we don't wrap when sampling for post processing
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        //Attach each texture to a different slot.
-        //GL_COLOR_ATTACHMENT0 + 1 = GL_COLOR_ATTACHMENT1, etc
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, framebuffer.colorBuffers[i], 0);
-    }
-    //Explicitly tell OpenGL which color attachments we will draw to
-    const GLenum drawBuffers[3] = {
-            GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2
-    };
-    glDrawBuffers(3, drawBuffers);
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    return framebuffer;
-}
 
 // Camera and transforms
 ew::Camera camera;
 ew::CameraController cameraController;
-std::vector<ew::Transform> monkeyTransforms;
-ew::Transform planeTransform;
-ew::Mesh plane;
 
-// G-Buffer
-FrameBuffer gBuffer;
+// Heightmap data
+struct HeightmapData {
+    GLuint VAO, VBO, EBO;
+    unsigned int width, height;
+    unsigned int numStrips;
+    unsigned int numVertsPerStrip;
+    GLuint texture;
+};
 
-// Shadow mapping structs and variables
-struct DirectionalLight {
-    glm::vec3 direction = glm::vec3(-0.2f, -1.0f, -0.3f);
-    glm::vec3 color = glm::vec3(1.0f);
-    float intensity = 1.0f;
-
-    // Shadow mapping parameters
-    float minBias = 0.001f;
-    float maxBias = 0.01f;
-    float softness = 0.0f;
-} directionalLight;
-
-// Frame buffer for regular rendering
-FrameBuffer framebuffer;
-
-struct ShadowMap {
-    GLuint fbo;
-    GLuint depthTexture;
-
-    void init() {
-        glGenFramebuffers(1, &fbo);
-        glGenTextures(1, &depthTexture);
-
-        glBindTexture(GL_TEXTURE_2D, depthTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, SHADOW_WIDTH, SHADOW_HEIGHT,
-            0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-        float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTexture, 0);
-        glDrawBuffer(GL_NONE);
-        glReadBuffer(GL_NONE);
-
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            printf("ERROR: Framebuffer is not complete!\n");
-        }
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
-} shadowMap;
-
-// Material for rendering
-struct Material {
-    float Ka = 1.0f;
-    float Kd = 0.5f;
-    float Ks = 0.5f;
-    float Shininess = 128.0f;
-} material;
+HeightmapData heightmap;
 
 // Helper Functions
 void resetCamera(ew::Camera* camera, ew::CameraController* controller) {
-    camera->position = glm::vec3(0, 3.0f, 5.0f);
+    camera->position = glm::vec3(0, 50.0f, 50.0f);
     camera->target = glm::vec3(0);
     controller->yaw = controller->pitch = 0;
-}
-
-glm::mat4 calculateLightSpaceMatrix() {
-    float near = 1.0f;
-    float far = 15.0f;
-    float size = 5.0f;
-
-    glm::mat4 lightProjection = glm::perspective(glm::radians(45.0f), 1.0f, near, far);
-
-    glm::mat4 lightView = glm::lookAt(
-        -directionalLight.direction * 5.0f,
-        glm::vec3(0.0f),
-        glm::vec3(1.0f, 1.0f, 0.0f)
-    );
-
-    return lightProjection * lightView;
-}
-
-void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeMesh) {
-    glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
-    glClear(GL_DEPTH_BUFFER_BIT);
-    glCullFace(GL_BACK);
-
-    glm::mat4 lightSpaceMatrix = calculateLightSpaceMatrix();
-
-    depthShader.use();
-    depthShader.setMat4("_LightSpaceMatrix", lightSpaceMatrix);
-
-    // Render all 64 monkeys
-    for (size_t i = 0; i < monkeyTransforms.size(); i++) {
-        depthShader.setMat4("_Model", monkeyTransforms[i].modelMatrix());
-        model.draw();
-    }
-
-    // Render plane
-    depthShader.setMat4("_Model", planeTransform.modelMatrix());
-    planeMesh.draw();
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh) {
-    shader.use();
-
-    // Camera and view
-    shader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
-    shader.setVec3("camera_pos", camera.position);
-
-    // Render plane
-    shader.setMat4("_Model", planeTransform.modelMatrix());
-    planeMesh.draw();
-
-    // Render all monkeys
-    for (size_t i = 0; i < monkeyTransforms.size(); i++) {
-        shader.setMat4("_Model", monkeyTransforms[i].modelMatrix());
-        model.draw();
-    }
-
-
-}
-
-void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh, GLuint texture) {
-    shader.use();
-
-    // Texture
-    shader.setInt("_MainTexture", 0);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture);
-
-    // Shadow map
-    shader.setInt("_ShadowMap", 1);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, shadowMap.depthTexture);
-
-    // Light space matrix
-    glm::mat4 lightSpaceMatrix = calculateLightSpaceMatrix();
-    shader.setMat4("_LightSpaceMatrix", lightSpaceMatrix);
-
-    // Light direction and shadow parameters
-    shader.setVec3("_LightDirection", directionalLight.direction);
-    shader.setFloat("_MinBias", directionalLight.minBias);
-    shader.setFloat("_MaxBias", directionalLight.maxBias);
-    shader.setFloat("_ShadowSoftness", directionalLight.softness);
-
-    // Camera and view
-    shader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
-    shader.setVec3("camera_pos", camera.position);
-
-    // Material properties
-    shader.setFloat("_Material.Ka", material.Ka);
-    shader.setFloat("_Material.Kd", material.Kd);
-    shader.setFloat("_Material.Ks", material.Ks);
-    shader.setFloat("_Material.Shininess", material.Shininess);
-
-    // Render all 64 monkeys
-    for (size_t i = 0; i < monkeyTransforms.size(); i++) {
-        shader.setMat4("_Model", monkeyTransforms[i].modelMatrix());
-        monkeyModel.draw();
-    }
-
-
-    // Render plane
-    shader.setMat4("_Model", planeTransform.modelMatrix());
-    planeMesh.draw();
 }
 
 void drawUI() {
@@ -280,73 +59,11 @@ void drawUI() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::Begin("GBuffers"); {
-        ImVec2 texSize = ImVec2(gBuffer.width / 4, gBuffer.height / 4);
-        for (size_t i = 0; i < 3; i++)
-        {
-            ImGui::Image((ImTextureID)gBuffer.colorBuffers[i], texSize, ImVec2(0, 1), ImVec2(1, 0));
-        }
-    }
-    ImGui::End();
-
-    ImGui::Begin("Shadow Mapping Settings");
+    ImGui::Begin("Controls");
 
     if (ImGui::Button("Reset Camera")) {
         resetCamera(&camera, &cameraController);
     }
-
-    if (ImGui::CollapsingHeader("Light Direction")) {
-        ImGui::SliderFloat3("Direction", glm::value_ptr(directionalLight.direction), -1.0f, 1.0f);
-        directionalLight.direction = glm::normalize(directionalLight.direction);
-    }
-
-    if (ImGui::CollapsingHeader("Shadow Settings")) {
-        ImGui::SliderFloat("Min Bias", &directionalLight.minBias, 0.0001f, 0.01f);
-        ImGui::SliderFloat("Max Bias", &directionalLight.maxBias, 0.0001f, 0.1f);
-        ImGui::SliderFloat("Shadow Softness", &directionalLight.softness, 0.0f, 2.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Material Properties")) {
-        ImGui::SliderFloat("Ambient", &material.Ka, 0.0f, 1.0f);
-        ImGui::SliderFloat("Diffuse", &material.Kd, 0.0f, 1.0f);
-        ImGui::SliderFloat("Specular", &material.Ks, 0.0f, 1.0f);
-        ImGui::SliderFloat("Shininess", &material.Shininess, 2.0f, 256.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Point Lights")) {
-        // Ensure the slider doesn't exceed MAX_POINT_LIGHTS
-        ImGui::SliderInt("Number of Lights", &currentPointLightCount, 0, MAX_POINT_LIGHTS);
-
-        for (int i = 0; i < currentPointLightCount; i++) {
-            ImGui::PushID(i);
-
-            // Create a collapsing header for each point light
-            if (ImGui::CollapsingHeader(("Point Light " + std::to_string(i)).c_str())) {
-                // Position
-                ImGui::SliderFloat3("Position", glm::value_ptr(pointLights[i].position), -20.0f, 20.0f);
-
-                // Radius (light falloff distance)
-                ImGui::SliderFloat("Radius", &pointLights[i].radius, 1.0f, 20.0f);
-
-                // Color
-                ImGui::ColorEdit3("Color", glm::value_ptr(pointLights[i].color));
-
-                // Intensity (alpha channel)
-                ImGui::SliderFloat("Intensity", &pointLights[i].color.a, 0.0f, 2.0f);
-            }
-
-            ImGui::PopID();
-
-            // Optional: Separator between lights
-            if (i < currentPointLightCount - 1) {
-                ImGui::Separator();
-            }
-        }
-    }
-
-    // Shadow map debug view
-    ImGui::Text("Shadow Map Debug View");
-    ImGui::Image((ImTextureID)(intptr_t)shadowMap.depthTexture, ImVec2(256, 256), ImVec2(0, 1), ImVec2(1, 0));
 
     ImGui::End();
 
@@ -398,87 +115,115 @@ GLFWwindow* initWindow(const char* title, int width, int height) {
     return window;
 }
 
+HeightmapData createHeightMap() {
+    HeightmapData data;
+
+    int width, height, nChannels;
+    unsigned char* imageData = stbi_load("assets/northamericaHeightMap.png",
+        &width, &height, &nChannels, 0);
+
+    if (!imageData) {
+        printf("Failed to load heightmap image!\n");
+        exit(-1);
+    }
+
+    data.width = width;
+    data.height = height;
+    data.numStrips = height - 1;
+    data.numVertsPerStrip = width * 2;
+
+    // Store heightmap as texture for visualization
+    data.texture = ew::loadTexture("assets/northamericaHeightMap.png");
+
+    std::vector<float> vertices;
+    float yScale = 0.25, yShift = 16.0f;  // apply a scale+shift to the height data
+
+    // Generate vertices
+    for (unsigned int i = 0; i < height; i++) {
+        for (unsigned int j = 0; j < width; j++) {
+            // retrieve texel for (i,j) tex coord
+            unsigned char* texel = imageData + (j + width * i) * nChannels;
+            // raw height at coordinate
+            unsigned char y = texel[0];
+
+            // vertex
+            vertices.push_back(-height / 2.0f + i);      // v.x
+            vertices.push_back((int)y * yScale - yShift); // v.y
+            vertices.push_back(-width / 2.0f + j);       // v.z
+
+            // Add texture coordinates
+            vertices.push_back(j / (float)(width - 1));  // u
+            vertices.push_back(i / (float)(height - 1)); // v
+        }
+    }
+
+    // Generate indices for triangle strips
+    std::vector<unsigned int> indices;
+    for (unsigned int i = 0; i < height - 1; i++) {
+        for (unsigned int j = 0; j < width; j++) {
+            for (unsigned int k = 0; k < 2; k++) {
+                indices.push_back(j + width * (i + k));
+            }
+        }
+    }
+
+    // Setup VAO, VBO, EBO
+    glGenVertexArrays(1, &data.VAO);
+    glBindVertexArray(data.VAO);
+
+    glGenBuffers(1, &data.VBO);
+    glBindBuffer(GL_ARRAY_BUFFER, data.VBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), &vertices[0], GL_STATIC_DRAW);
+
+    // Position attribute (3 floats)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    // Texture coordinate attribute (2 floats)
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glGenBuffers(1, &data.EBO);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, data.EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
+
+    stbi_image_free(imageData);
+    return data;
+}
+
+void renderHeightmap(ew::Shader& shader, HeightmapData& heightmap) {
+    shader.use();
+
+    glBindVertexArray(heightmap.VAO);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, heightmap.texture);
+
+    // Render the mesh triangle strip by triangle strip - each row at a time
+    for (unsigned int strip = 0; strip < heightmap.numStrips; ++strip) {
+        glDrawElements(
+            GL_TRIANGLE_STRIP,
+            heightmap.numVertsPerStrip,
+            GL_UNSIGNED_INT,
+            (void*)(sizeof(unsigned int) * heightmap.numVertsPerStrip * strip)
+        );
+    }
+}
+
 int main() {
-    GLFWwindow* window = initWindow("Shadow Mapping", screenWidth, screenHeight);
+    GLFWwindow* window = initWindow("Heightmap Renderer", screenWidth, screenHeight);
     if (!window) return -1;
 
     // Shader initialization
-    ew::Shader newShader = ew::Shader("assets/full.vert", "assets/full.frag");
-    ew::Shader depthShader = ew::Shader("assets/depthmap.vert", "assets/depthmap.frag");
-    ew::Shader gBufferShader = ew::Shader("assets/lit.vert", "assets/geometryPass.frag");
-    ew::Shader deferredShader = ew::Shader("assets/fsTriangle.vert", "assets/deferredLit.frag");
-
-    ew::Shader lightOrbShader = ew::Shader("assets/lightOrb.vert", "assets/lightOrb.frag");
-
-    // Model and texture loading
-    ew::Model monkeyModel("assets/suzanne.obj");
-    GLuint brickTexture = ew::loadTexture("assets/brick_color.jpg");
-
-    ew::Mesh sphereMesh = ew::createSphere(1.0f, 8);
+    ew::Shader heightmapShader = ew::Shader("assets/heightmap.vert", "assets/heightmap.frag");
 
     // Camera setup
-    camera.position = glm::vec3(0.0f, 10.0f, 20.0f);
+    camera.position = glm::vec3(0.0f, 50.0f, 100.0f);
     camera.target = glm::vec3(0.0f, 0.0f, 0.0f);
     camera.aspectRatio = (float)screenWidth / screenHeight;
     camera.fov = 60.0f;
 
-    // Create 64 monkey transforms in an 8x8 grid
-    const int GRID_SIZE = 8;
-    const float SPACING = 3.0f;
-    const float START_POS = -((GRID_SIZE - 1) * SPACING) / 2.0f;
-
-    for (int x = 0; x < GRID_SIZE; x++) {
-        for (int z = 0; z < GRID_SIZE; z++) {
-            ew::Transform transform;
-            transform.position = glm::vec3(
-                START_POS + x * SPACING,
-                1.0f,
-                START_POS + z * SPACING
-            );
-            transform.scale = glm::vec3(0.7f);
-            monkeyTransforms.push_back(transform);
-        }
-    }
-
-    // Initialize shadow map
-    shadowMap.init();
-
-    // Initialize G-Buffer
-    gBuffer = createGBuffer(screenWidth, screenHeight);
-
-    // Create a framebuffer for deferred lighting output
-    framebuffer.width = screenWidth;
-    framebuffer.height = screenHeight;
-    glGenFramebuffers(1, &framebuffer.fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
-
-    // Create color attachment
-    glGenTextures(1, &framebuffer.color0);
-    glBindTexture(GL_TEXTURE_2D, framebuffer.color0);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, framebuffer.width, framebuffer.height, 0, GL_RGBA, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, framebuffer.color0, 0);
-
-    // Create depth attachment
-    glGenRenderbuffers(1, &framebuffer.depth);
-    glBindRenderbuffer(GL_RENDERBUFFER, framebuffer.depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, framebuffer.width, framebuffer.height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, framebuffer.depth);
-
-    // Check framebuffer completeness
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        printf("ERROR: Framebuffer is not complete!\n");
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // Create ground plane
-    ew::Mesh plane = ew::createPlane(20, 20, 10);
-    planeTransform.position = glm::vec3(0.0f, -5.0f, -5.0f);
-
-    // Create fullscreen quad (using a single triangle that covers the screen)
-    GLuint dummyVAO;
-    glGenVertexArrays(1, &dummyVAO);
+    // Create the heightmap
+    heightmap = createHeightMap();
 
     // Main render loop
     while (!glfwWindowShouldClose(window)) {
@@ -491,157 +236,17 @@ int main() {
         // Camera movement
         cameraController.move(window, &camera, deltaTime);
 
-        // Update monkey rotations
-        for (size_t i = 0; i < monkeyTransforms.size(); i++) {
-            // Alternate rotation directions based on position in grid
-            float rotationDirection = ((i % 2) == 0) ? 1.0f : -1.0f;
-
-            monkeyTransforms[i].rotation = glm::rotate(
-                monkeyTransforms[i].rotation,
-                deltaTime * rotationDirection,
-                glm::vec3(0.0f, 1.0f, 0.0f)
-            );
-        }
-
-        // 1. Render scene to G-Buffer
-        glBindFramebuffer(GL_FRAMEBUFFER, gBuffer.fbo);
-        glViewport(0, 0, gBuffer.width, gBuffer.height);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        // Clear the screen
+        glClearColor(0.2f, 0.3f, 0.4f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        gBufferShader.use();
-        gBufferShader.setInt("_MainTexture", 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, brickTexture);
-        drawScene(camera, gBufferShader, monkeyModel, plane);
+        // Set shader uniforms
+        heightmapShader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
+        heightmapShader.setMat4("_Model", glm::mat4(1.0f)); // Identity matrix
+        heightmapShader.setInt("_HeightmapTexture", 0);
 
-        // 2. Render depth map from light's perspective
-        renderShadowMap(depthShader, monkeyModel, plane);
-
-        // 3. LIGHTING PASS - Apply deferred lighting using G-Buffer data
-        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
-        glViewport(0, 0, framebuffer.width, framebuffer.height);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        deferredShader.use();
-
-        // Set lighting uniforms
-        deferredShader.setVec3("_LightDirection", directionalLight.direction);
-        deferredShader.setVec3("_LightColor", directionalLight.color);
-        deferredShader.setFloat("_LightIntensity", directionalLight.intensity);
-        deferredShader.setVec3("camera_pos", camera.position);
-
-        // Set material properties
-        deferredShader.setFloat("_Material.Ka", material.Ka);
-        deferredShader.setFloat("_Material.Kd", material.Kd);
-        deferredShader.setFloat("_Material.Ks", material.Ks);
-        deferredShader.setFloat("_Material.Shininess", material.Shininess);
-
-        // Set shadow mapping parameters
-        deferredShader.setMat4("_LightSpaceMatrix", calculateLightSpaceMatrix());
-        deferredShader.setFloat("_MinBias", directionalLight.minBias);
-        deferredShader.setFloat("_MaxBias", directionalLight.maxBias);
-        deferredShader.setFloat("_ShadowSoftness", directionalLight.softness);
-
-        // Bind G-Buffer textures
-        deferredShader.setInt("_gPositions", 0);
-        deferredShader.setInt("_gNormals", 1);
-        deferredShader.setInt("_gAlbedo", 2);
-        deferredShader.setInt("_ShadowMap", 3);
-
-
-        deferredShader.setInt("_PointLightCount", currentPointLightCount);
-        // Initialize point lights
-        const float GRID_OFFSET = SPACING * (GRID_SIZE / 2.0f);
-
-        for (int i = 0; i < currentPointLightCount; i++) {
-            // Spread lights around the grid based on current light count
-            switch (i % 4) {
-            case 0:
-                pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, -GRID_OFFSET);
-                pointLights[i].color = glm::vec4(1.0f, 0.3f, 0.3f, 1.0f);  // Red
-                break;
-            case 1:
-                pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, -GRID_OFFSET);
-                pointLights[i].color = glm::vec4(0.3f, 1.0f, 0.3f, 1.0f);  // Green
-                break;
-            case 2:
-                pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, GRID_OFFSET);
-                pointLights[i].color = glm::vec4(0.3f, 0.3f, 1.0f, 1.0f);  // Blue
-                break;
-            case 3:
-                pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, GRID_OFFSET);
-                pointLights[i].color = glm::vec4(1.0f, 1.0f, 0.3f, 1.0f);  // Yellow
-                break;
-            }
-
-            // Set high radius to cover the entire grid
-            pointLights[i].radius = 15.0f;
-        }
-
-
-        // Set point light uniforms only for the current number of lights
-        for (int i = 0; i < currentPointLightCount; i++) {
-            std::string prefix = "_PointLights[" + std::to_string(i) + "].";
-            deferredShader.setVec3(prefix + "position", pointLights[i].position);
-            deferredShader.setFloat(prefix + "radius", pointLights[i].radius);
-            deferredShader.setVec4(prefix + "color", pointLights[i].color);
-        }
-
-        glBindTextureUnit(0, gBuffer.colorBuffers[0]);  // Position
-        glBindTextureUnit(1, gBuffer.colorBuffers[1]);  // Normal
-        glBindTextureUnit(2, gBuffer.colorBuffers[2]);  // Albedo
-        glBindTextureUnit(3, shadowMap.depthTexture);   // Shadow map
-
-        // Draw fullscreen triangle
-        glBindVertexArray(dummyVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-
-        // 4. Copy the result to the default framebuffer
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, screenWidth, screenHeight);
-        glClearColor(0.6f, 0.8f, 0.92f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // Use a simple shader to render the final image to the screen
-        // For simplicity, we're using the default screen rendering
-        // Blit depth buffer from G-Buffer to framebuffer
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer.fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer.fbo);
-        glBlitFramebuffer(
-            0, 0, screenWidth, screenHeight, 0, 0, screenWidth, screenHeight,
-            GL_DEPTH_BUFFER_BIT, GL_NEAREST
-        );
-
-        // Draw light orbs
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
-        glDisable(GL_CULL_FACE);
-
-        lightOrbShader.use();
-        lightOrbShader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
-
-        for (int i = 0; i < currentPointLightCount; i++) {
-            glm::mat4 m = glm::mat4(1.0f);
-            m = glm::translate(m, pointLights[i].position);
-            m = glm::scale(m, glm::vec3(0.5f));
-
-            lightOrbShader.setMat4("_Model", m);
-
-            // Use RGB components and normalize intensity
-            glm::vec3 lightColor = glm::vec3(pointLights[i].color);
-            float intensity = pointLights[i].color.a;
-            lightOrbShader.setVec3("_Color", lightColor * intensity);
-
-            sphereMesh.draw();
-        }
-
-        // Blit final image to screen
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, framebuffer.width, framebuffer.height,
-            0, 0, screenWidth, screenHeight,
-            GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        // Render the heightmap
+        renderHeightmap(heightmapShader, heightmap);
 
         // Draw UI
         drawUI();
@@ -651,7 +256,10 @@ int main() {
     }
 
     // Cleanup
-    glDeleteVertexArrays(1, &dummyVAO);
+    glDeleteVertexArrays(1, &heightmap.VAO);
+    glDeleteBuffers(1, &heightmap.VBO);
+    glDeleteBuffers(1, &heightmap.EBO);
+    glDeleteTextures(1, &heightmap.texture);
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

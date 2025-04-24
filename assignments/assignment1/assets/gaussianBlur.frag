@@ -23,21 +23,20 @@ void main()
         vec2(offset, -offset)
     );
     
-    // Kernel weights remain the same
+    // Gaussian kernel weights (approximating a 3x3 Gaussian distribution)
     const float kernel[9] = float[](
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0
+        0.0625, 0.125, 0.0625,
+        0.125,  0.25,  0.125,
+        0.0625, 0.125, 0.0625
     );
     
-    // Calculate blur strength based on _BlurRadius
-    float strength = 9.0; // Sum of all kernel weights
+    // Sum of all weights is 1.0
     
     vec3 average = vec3(0.0);
     for (int i = 0; i < 9; i++)
     {
         vec3 local = texture(_MainTexture, vs_texcoord.xy + offsets[i]).rgb;
-        average += local * kernel[i] / strength;
+        average += local * kernel[i];
     }
     
     FragColor = vec4(average, 1.0);
