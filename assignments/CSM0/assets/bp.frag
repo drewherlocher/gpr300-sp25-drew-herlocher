@@ -1,14 +1,19 @@
 #version 450
 
 //constants
-const int NUM_CASCADES = 3;
+const int MAX_CASCADES = 6;
+uniform int NUM_CASCADES;
 
 //colors for visualizing cascades
-const vec3 CASCADE_COLORS[NUM_CASCADES] = vec3[]
+const vec3 CASCADE_COLORS[MAX_CASCADES] = vec3[]
 (
     vec3(1.0, 0.0, 0.0),    //red
     vec3(0.0, 1.0, 0.0),    //green
-    vec3(0.0, 0.0, 1.0)     //blue
+    vec3(0.0, 0.0, 1.0),    //blue
+
+    vec3(1.0, 0.0, 1.0),   // magenta
+    vec3(0.5, 0.5, 0.5),   // gray
+    vec3(0.0, 0.0, 0.0)    // black
 );
 
 //structs
@@ -30,9 +35,9 @@ struct Light
 out vec4 FragColor; 
 
 //uniforms
-uniform sampler2D shadow_maps[NUM_CASCADES];
-uniform float cascade_splits[NUM_CASCADES];
-uniform mat4 light_space_matrices[NUM_CASCADES];
+uniform sampler2D shadow_maps[MAX_CASCADES];
+uniform float cascade_splits[MAX_CASCADES];
+uniform mat4 light_space_matrices[MAX_CASCADES];
 
 uniform vec3 camera_pos;
 
@@ -63,6 +68,9 @@ int getCascadeIndex(float viewDepth)
             break;
         }
     }
+
+    cascade_index = clamp(cascade_index, 0, NUM_CASCADES - 1);
+
     return cascade_index;
 }
 
@@ -152,7 +160,8 @@ void main()
 	//visualize cascades
 	if (show_cascades) 
 	{
-		FragColor = vec4(obj_color * lighting * CASCADE_COLORS[cascade_index], 1.0);
+        vec3 cascade_color = CASCADE_COLORS[cascade_index];
+		FragColor = vec4(obj_color * lighting * cascade_color, 1.0);
 	} 
 	else 
 	{

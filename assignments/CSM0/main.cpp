@@ -23,20 +23,22 @@
 #include <ew/texture.h>
 #include <iostream>
 
-void framebufferSizeCallback(GLFWwindow* window, int width, int height);
-GLFWwindow* initWindow(const char* title, int width, int height);
-void drawUI();
-void initCamera();
-void definePipline();
-void initDetails();
-//glm::mat4 calculateLightSpaceMatrix();
-std::vector<glm::mat4> calculateLightSpaceMatrices();
-glm::mat4 calculateLightSpaceWithTexelSnapping(glm::mat4 lightView, glm::vec3 center, float texelSize);
 
-void calculateCascadeSplits();
-std::vector<glm::vec4> calculateFrustumCorners(float nearSplit, float farSplit);
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time);
 void shadowPass(ew::Shader shadowPass, ew::Model model);
+void calculateCascadeSplits();
+std::vector<glm::mat4> calculateLightSpaceMatrices();
+glm::mat4 calculateLightSpaceWithTexelSnapping(glm::mat4 lightView, glm::vec3 center, float texelSize);
+std::vector<glm::vec4> calculateFrustumCorners(float nearSplit, float farSplit);
+
+void reinitializeDepthBuffer();
+void resetCamera(ew::Camera* camera, ew::CameraController* controller);
+void initCamera();
+void initDetails();
+void definePipline();
+void drawUI();
+void framebufferSizeCallback(GLFWwindow* window, int width, int height);
+GLFWwindow* initWindow(const char* title, int width, int height);
 GLenum glCheckError_(const char* file, int line)
 {
 	GLenum errorCode;
@@ -62,12 +64,7 @@ int screenWidth = 1080;
 int screenHeight = 720;
 float prevFrameTime;
 float deltaTime;
-
-//CSM constants
-const int NUM_CASCADES = 3;
-float cascadeSplits[NUM_CASCADES];
-std::vector<glm::mat4> lightSpaceMatrices;
-static glm::vec4 light_orbit_radius = { 2.0f, 2.0f, -2.0f, 1.0f };
+const int MAX_CASCADES = 6;
 
 ew::Camera camera;	//our camera
 ew::CameraController cameraController;
@@ -99,12 +96,20 @@ struct Debug
 	bool use_pcf = true;
 	bool show_cascades = true;
 	int cascade_to_view = 0;
+	int num_cascades = 3;
 }debug;
+
+struct ViewFrustumSettings
+{
+	float nearPlane = 0.1f;
+	float farPlane = 100.0f;
+	float lambda = 0.75f;
+}viewFrustum;
 
 struct DepthBuffer
 {
 	GLuint fbo;
-	GLuint depthTextures[NUM_CASCADES];
+	GLuint depthTextures[MAX_CASCADES];
 
 	float width;
 	float height;
@@ -118,10 +123,10 @@ struct DepthBuffer
 			height = dHeight;
 
 			//depth attachment
-			glGenTextures(NUM_CASCADES, depthTextures);
+			glGenTextures(MAX_CASCADES, depthTextures);
 
 			//for each cascade
-			for (int i = 0; i < NUM_CASCADES; i++) 
+			for (int i = 0; i < MAX_CASCADES; i++) 
 			{
 				glBindTexture(GL_TEXTURE_2D, depthTextures[i]);
 				glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, dWidth, dHeight, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
@@ -145,7 +150,18 @@ struct DepthBuffer
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	}
 
+	void Cleanup() const
+	{
+		glDeleteTextures(MAX_CASCADES, depthTextures);
+		glDeleteFramebuffers(1, &fbo);
+	}
+
 }depthBuffer;
+
+//CSM constants
+float cascadeSplits[MAX_CASCADES];
+std::vector<glm::mat4> lightSpaceMatrices;
+static glm::vec4 light_orbit_radius = { 2.0f, 2.0f, -2.0f, 1.0f };
 
 int main()
 {
@@ -188,34 +204,10 @@ int main()
 
 		glfwSwapBuffers(window);
 	}
+
+	depthBuffer.Cleanup();
+
 	printf("Shutting down...");
-}
-
-void resetCamera(ew::Camera* camera, ew::CameraController* controller)
-{
-	//reset position
-	camera->position = glm::vec3(0, 0, 5.0f);
-	//reset target
-	camera->target = glm::vec3(0);
-
-	//reset controller rotation
-	controller->yaw = controller->pitch = 0;
-}
-
-void initCamera()
-{
-	camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
-	camera.target = glm::vec3(0.0f, 0.0f, 0.0f);	//look at center of scene
-	camera.aspectRatio = (float)screenWidth / screenHeight;
-	camera.fov = 60.0f;
-}
-
-void initDetails()
-{
-	plane.load(ew::createPlane(50.0f, 50.0f, 100));
-	light.position = glm::vec3(1.0f);
-	light.color = glm::vec3(0.5f, 0.5f, 0.5f);
-	light.rotating = false;
 }
 
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
@@ -243,7 +235,7 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	glEnable(GL_DEPTH_TEST);
 
 	// Activate texture units for shadow maps
-	for (int i = 0; i < NUM_CASCADES; i++) 
+	for (int i = 0; i < debug.num_cascades; i++) 
 	{
 		glActiveTexture(GL_TEXTURE0 + i);
 		glBindTexture(GL_TEXTURE_2D, depthBuffer.depthTextures[i]);
@@ -252,19 +244,25 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	shader.use();
 
 	//shadow map samplers
-	for (int i = 0; i < NUM_CASCADES; i++) {
+	for (int i = 0; i < debug.num_cascades; i++) 
+	{
 		shader.setInt("shadow_maps[" + std::to_string(i) + "]", i);
 	}
 
 	//cascade splits
-	for (int i = 0; i < NUM_CASCADES; i++) {
+	for (int i = 0; i < debug.num_cascades; i++) 
+	{
 		shader.setFloat("cascade_splits[" + std::to_string(i) + "]", cascadeSplits[i]);
 	}
 
 	//light space matrices
-	for (int i = 0; i < NUM_CASCADES; i++) {
+	for (int i = 0; i < debug.num_cascades; i++) 
+	{
 		shader.setMat4("light_space_matrices[" + std::to_string(i) + "]", lightSpaceMatrices[i]);
 	}
+
+	//num cascades
+	shader.setInt("NUM_CASCADES", debug.num_cascades); 
 
 	//scene matrices
 	shader.setMat4("_Model", glm::mat4(1.0f));
@@ -321,7 +319,7 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 		}
 
 		//render shadow map for each cascade
-		for (int i = 0; i < NUM_CASCADES; i++) 
+		for (int i = 0; i < debug.num_cascades; i++) 
 		{
 			//attach texture
 			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthBuffer.depthTextures[i], 0);
@@ -351,28 +349,40 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-glm::mat4 calculateLightSpaceWithTexelSnapping(glm::mat4 lightView, glm::vec3 center, float texelSize) 
+void calculateCascadeSplits()
 {
-	//world-space frustum center -> light space
-	glm::vec3 lightSpaceCenter = glm::vec3(lightView * glm::vec4(center, 1.0f));
+	//used for distribution
+	float ratio = viewFrustum.farPlane / viewFrustum.nearPlane;
 
-	//nearest texel -> stabilize shadows
-	lightSpaceCenter.x = std::floor(lightSpaceCenter.x / texelSize) * texelSize;
-	lightSpaceCenter.y = std::floor(lightSpaceCenter.y / texelSize) * texelSize;
+	//clear array
+	for (int i = 0; i < MAX_CASCADES; i++)
+	{
+		cascadeSplits[i] = 0.0f;
+	}
 
-	//mmove to the snapped position
-	glm::mat4 texelSnappedTranslation = glm::translate(glm::mat4(1.0f), -lightSpaceCenter);
+	//for each cascade
+	for (int i = 0; i < debug.num_cascades; i++)
+	{
+		//calc normalized position
+		float p = (i + 1) / float(debug.num_cascades);
 
-	// return matrix
-	return texelSnappedTranslation * lightView;
+		//calc uniform split distance
+		float uniform = viewFrustum.nearPlane + (viewFrustum.farPlane - viewFrustum.nearPlane) * p;
+
+		//calc logarithmic split distance
+		float logarithmic = viewFrustum.nearPlane * std::pow(ratio, p);
+
+		//mix uniform + logarithmic based on Lambda
+		cascadeSplits[i] = viewFrustum.lambda * logarithmic + (1 - viewFrustum.lambda) * uniform;
+	}
 }
 
 std::vector<glm::mat4> calculateLightSpaceMatrices()
 {
-	std::vector<glm::mat4> matrices(NUM_CASCADES);
+	std::vector<glm::mat4> matrices(debug.num_cascades);
 
 	//calculate light space matrix for each cascade
-	for (int i = 0; i < NUM_CASCADES; i++) 
+	for (int i = 0; i < debug.num_cascades; i++) 
 	{
 		float nearSplit = (i == 0) ? 0.1f : cascadeSplits[i - 1];
 		float farSplit = cascadeSplits[i];
@@ -451,30 +461,20 @@ std::vector<glm::mat4> calculateLightSpaceMatrices()
 	return matrices;
 }
 
-void calculateCascadeSplits() 
+glm::mat4 calculateLightSpaceWithTexelSnapping(glm::mat4 lightView, glm::vec3 center, float texelSize)
 {
-	float nearPlane = 0.1f;
-	float farPlane = 100.0f;
-	float lambda = 0.75f;
+	//world-space frustum center -> light space
+	glm::vec3 lightSpaceCenter = glm::vec3(lightView * glm::vec4(center, 1.0f));
 
-	//used for distribution
-	float ratio = farPlane / nearPlane;
+	//nearest texel -> stabilize shadows
+	lightSpaceCenter.x = std::floor(lightSpaceCenter.x / texelSize) * texelSize;
+	lightSpaceCenter.y = std::floor(lightSpaceCenter.y / texelSize) * texelSize;
 
-	//for each cascade
-	for (int i = 0; i < NUM_CASCADES; i++) 
-	{
-		//calc normalized position
-		float p = (i + 1) / float(NUM_CASCADES);
+	//mmove to the snapped position
+	glm::mat4 texelSnappedTranslation = glm::translate(glm::mat4(1.0f), -lightSpaceCenter);
 
-		//calc uniform split distance
-		float uniform = nearPlane + (farPlane - nearPlane) * p;
-
-		//calc logarithmic split distance
-		float logarithmic = nearPlane * std::pow(ratio, p);
-
-		//mix uniform + logarithmic based on Lambda
-		cascadeSplits[i] = lambda * logarithmic + (1 - lambda) * uniform;
-	}
+	// return matrix
+	return texelSnappedTranslation * lightView;
 }
 
 std::vector<glm::vec4> calculateFrustumCorners(float nearSplit, float farSplit) 
@@ -508,6 +508,42 @@ std::vector<glm::vec4> calculateFrustumCorners(float nearSplit, float farSplit)
 	return corners;
 }
 
+
+//reinitialize depth buffer when cascade count changes
+void reinitializeDepthBuffer()
+{
+	depthBuffer.Cleanup();
+	depthBuffer.Initialize(screenWidth, screenHeight);
+	calculateCascadeSplits();
+}
+
+void resetCamera(ew::Camera* camera, ew::CameraController* controller)
+{
+	//reset position
+	camera->position = glm::vec3(0, 0, 5.0f);
+	//reset target
+	camera->target = glm::vec3(0);
+
+	//reset controller rotation
+	controller->yaw = controller->pitch = 0;
+}
+
+void initCamera()
+{
+	camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+	camera.target = glm::vec3(0.0f, 0.0f, 0.0f);	//look at center of scene
+	camera.aspectRatio = (float)screenWidth / screenHeight;
+	camera.fov = 60.0f;
+}
+
+void initDetails()
+{
+	plane.load(ew::createPlane(60.0f, 60.0f, 100));
+	light.position = glm::vec3(1.0f);
+	light.color = glm::vec3(0.5f, 0.5f, 0.5f);
+	light.rotating = false;
+}
+
 void definePipline()
 {
 	//pipeline definition
@@ -537,6 +573,37 @@ void drawUI() {
 		ImGui::SliderFloat("Shininess", &material.shininess, 2.0f, 1024.0f);
 	}
 	ImGui::Separator();
+	if (ImGui::CollapsingHeader("View Frustrum Settings"))
+	{
+		//store to detect changes
+		float prevNear = viewFrustum.nearPlane;
+		float prevFar = viewFrustum.farPlane;
+		float prevLambda = viewFrustum.lambda;
+
+		//near plane
+		ImGui::SliderFloat("Near Plane", &viewFrustum.nearPlane, 0.01f, 10.0f, "%.2f");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##Near")) viewFrustum.nearPlane = 0.1f;
+
+		//far plane
+		ImGui::SliderFloat("Far Plane", &viewFrustum.farPlane, 10.0f, 1000.0f, "%.1f");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##Far")) viewFrustum.farPlane = 100.0f;
+
+		//lambda
+		ImGui::SliderFloat("Lambda", &viewFrustum.lambda, 0.0f, 1.0f, "%.2f");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##Lambda")) viewFrustum.lambda = 0.75f;
+		
+		//recalc cascade splits if any values changed
+		if (prevNear != viewFrustum.nearPlane ||
+			prevFar != viewFrustum.farPlane ||
+			prevLambda != viewFrustum.lambda)
+		{
+			calculateCascadeSplits();
+		}
+	}
+	ImGui::Separator();
 	if (ImGui::CollapsingHeader("Shadow Pass"))
 	{
 		ImGui::SliderFloat("Bias", &debug.bias, 0.0f, 0.1f);
@@ -544,13 +611,27 @@ void drawUI() {
 		ImGui::SliderFloat("Max Bias", &debug.max_bias, 0.0f, 0.1f);
 		ImGui::Checkbox("Culling Front", &debug.cull_front);
 		ImGui::Checkbox("Using PCF", &debug.use_pcf);
-		ImGui::Checkbox("Show Cascade Colors", &debug.show_cascades);
+
 		ImGui::Separator(); //depth image
+		ImGui::Text("Cascade Settings");
+
+		ImGui::Checkbox("Show Cascade Colors", &debug.show_cascades);
 		
+		//slider for num of cascades
+		int prev_num_cascades = debug.num_cascades;
+		ImGui::SliderInt("Number of Cascades", &debug.num_cascades, 1, MAX_CASCADES);
+
+		//reinitialize when cascade count changes
+		if (prev_num_cascades != debug.num_cascades) 
+		{
+			reinitializeDepthBuffer();
+			debug.cascade_to_view = std::min(debug.cascade_to_view, debug.num_cascades - 1);
+		}
+
 		//slider to pick map
 		ImGui::Text("Cascade Shadow Maps:");
 		int selected_cascade = debug.cascade_to_view;
-		ImGui::SliderInt("Cascade to view", &selected_cascade, 0, NUM_CASCADES - 1);
+		ImGui::SliderInt("Cascade to view", &selected_cascade, 0, MAX_CASCADES);
 		debug.cascade_to_view = selected_cascade;
 
 		//display chosen cascade shadow map
