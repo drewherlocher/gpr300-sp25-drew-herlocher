@@ -30,6 +30,19 @@ int screenWidth = 1080;
 int screenHeight = 720;
 float prevFrameTime = 0.0f;
 float deltaTime = 0.0f;
+ew::Mesh sphereMesh;
+
+// Visualization mode for display (NEW)
+enum class VisualizationMode {
+    FINAL_RENDER,
+    POSITION_BUFFER,
+    NORMAL_BUFFER,
+    ALBEDO_BUFFER,
+    SHADOW_MAP,
+    LIGHT_VISUALIZATION
+};
+VisualizationMode currentVisualizationMode = VisualizationMode::FINAL_RENDER;
+bool showDebugUI = true;  // Toggle for debug UI
 
 // Forward declarations
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
@@ -38,6 +51,9 @@ void drawUI();
 void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeMesh);
 void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh, GLuint texture);
 void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh);
+void drawLights(ew::Shader& shader, ew::Mesh& sphereMesh);
+void drawDebugView(ew::Shader& shader, GLuint textureID); // NEW: For visualization modes
+void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods); // NEW: Key handler
 
 struct PointLight {
     glm::vec3 position;
@@ -46,10 +62,63 @@ struct PointLight {
 };
 const int MAX_POINT_LIGHTS = 64;
 PointLight pointLights[MAX_POINT_LIGHTS];
-int currentPointLightCount = 4;
+int currentPointLightCount = MAX_POINT_LIGHTS;
 
-// Define a single FrameBuffer struct that includes all needed members
-struct FrameBuffer {
+void distributePointLights() {
+    // Use the same grid parameters as the monkey layout
+    const float SPACING = 3.0f;
+    const int GRID_SIZE = 8;
+    const float START_POS = -((GRID_SIZE - 1) * SPACING) / 2.0f;
+
+    // We'll arrange lights in an 8x8 grid just like the monkeys
+    // but with small offsets so they don't overlap with monkeys
+    const float OFFSET_X = SPACING * 0.5f;
+    const float OFFSET_Z = SPACING * 0.5f;
+
+    int lightIndex = 0;
+
+    // Create a grid of lights matching the monkey grid pattern
+    for (int z = 0; z < GRID_SIZE; z++) {
+        for (int x = 0; x < GRID_SIZE; x++) {
+            if (lightIndex >= MAX_POINT_LIGHTS) break;
+
+            // Position lights at grid intersections with offset
+            float xPos = START_POS + x * SPACING + OFFSET_X;
+            float zPos = START_POS + z * SPACING + OFFSET_Z;
+
+            // Set light position - elevate above the monkeys
+            pointLights[lightIndex].position = glm::vec3(xPos, 3.5f, zPos);
+
+            // Assign different colors to make lights distinguishable
+            switch (lightIndex % 4) {
+            case 0:
+                pointLights[lightIndex].color = glm::vec4(1.0f, 0.3f, 0.3f, 1.0f);  // Red
+                break;
+            case 1:
+                pointLights[lightIndex].color = glm::vec4(0.3f, 1.0f, 0.3f, 1.0f);  // Green
+                break;
+            case 2:
+                pointLights[lightIndex].color = glm::vec4(0.3f, 0.3f, 1.0f, 1.0f);  // Blue
+                break;
+            case 3:
+                pointLights[lightIndex].color = glm::vec4(1.0f, 1.0f, 0.3f, 1.0f);  // Yellow
+                break;
+            }
+
+            // Set a consistent light radius appropriate for the grid spacing
+            pointLights[lightIndex].radius = SPACING * 0.8f;
+
+            lightIndex++;
+        }
+    }
+
+    // Ensure all remaining lights (if any) are initialized
+    for (int i = lightIndex; i < MAX_POINT_LIGHTS; i++) {
+        pointLights[i].position = glm::vec3(0.0f);
+        pointLights[i].color = glm::vec4(1.0f);
+        pointLights[i].radius = 5.0f;
+    }
+}struct FrameBuffer {
     GLuint fbo;
     GLuint colorBuffers[3]; // For GBuffer implementation
     GLuint color0;          // For shadow frame buffer
@@ -171,16 +240,25 @@ void resetCamera(ew::Camera* camera, ew::CameraController* controller) {
 }
 
 glm::mat4 calculateLightSpaceMatrix() {
-    float near = 1.0f;
-    float far = 15.0f;
-    float size = 5.0f;
+    // Parameters for the orthographic projection
+    float near_plane = 1.0f;
+    float far_plane = 25.0f;
 
-    glm::mat4 lightProjection = glm::perspective(glm::radians(45.0f), 1.0f, near, far);
+    glm::vec3 sceneCenter = glm::vec3(0.0f);
+
+    glm::vec3 lightPos = -directionalLight.direction * 15.0f;
 
     glm::mat4 lightView = glm::lookAt(
-        -directionalLight.direction * 5.0f,
-        glm::vec3(0.0f),
-        glm::vec3(1.0f, 1.0f, 0.0f)
+        lightPos,
+        sceneCenter,
+        glm::vec3(0.0f, 1.0f, 0.0f)
+    );
+
+    float orthoSize = 15.0f;
+    glm::mat4 lightProjection = glm::ortho(
+        -orthoSize, orthoSize,
+        -orthoSize, orthoSize,
+        near_plane, far_plane
     );
 
     return lightProjection * lightView;
@@ -190,14 +268,14 @@ void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeM
     glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
     glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
     glClear(GL_DEPTH_BUFFER_BIT);
-    glCullFace(GL_BACK);
+
+    glDisable(GL_CULL_FACE);
 
     glm::mat4 lightSpaceMatrix = calculateLightSpaceMatrix();
-
     depthShader.use();
     depthShader.setMat4("_LightSpaceMatrix", lightSpaceMatrix);
 
-    // Render all 64 monkeys
+    // Render all monkeys
     for (size_t i = 0; i < monkeyTransforms.size(); i++) {
         depthShader.setMat4("_Model", monkeyTransforms[i].modelMatrix());
         model.draw();
@@ -208,6 +286,16 @@ void renderShadowMap(ew::Shader& depthShader, ew::Model& model, ew::Mesh& planeM
     planeMesh.draw();
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Restore culling state for regular rendering
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+}
+
+void setupCulling() {
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
 }
 
 void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mesh& planeMesh) {
@@ -221,13 +309,12 @@ void drawScene(ew::Camera& camera, ew::Shader& shader, ew::Model& model, ew::Mes
     shader.setMat4("_Model", planeTransform.modelMatrix());
     planeMesh.draw();
 
+    glEnable(GL_DEPTH_TEST);
     // Render all monkeys
     for (size_t i = 0; i < monkeyTransforms.size(); i++) {
         shader.setMat4("_Model", monkeyTransforms[i].modelMatrix());
         model.draw();
     }
-
-
 }
 
 void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh, GLuint texture) {
@@ -269,10 +356,29 @@ void renderScene(ew::Shader& shader, ew::Model& monkeyModel, ew::Mesh& planeMesh
         monkeyModel.draw();
     }
 
-
     // Render plane
     shader.setMat4("_Model", planeTransform.modelMatrix());
     planeMesh.draw();
+}
+
+// NEW: Function to draw a fullscreen quad for debug visualization
+void drawDebugView(ew::Shader& shader, GLuint textureID) {
+    static GLuint debugVAO = 0;
+
+    // Create VAO for fullscreen quad if it doesn't exist
+    if (debugVAO == 0) {
+        glGenVertexArrays(1, &debugVAO);
+    }
+
+    shader.use();
+    shader.setInt("_MainTexture", 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+
+    // Draw a fullscreen triangle
+    glBindVertexArray(debugVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
 }
 
 void drawUI() {
@@ -280,78 +386,158 @@ void drawUI() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::Begin("GBuffers"); {
-        ImVec2 texSize = ImVec2(gBuffer.width / 4, gBuffer.height / 4);
-        for (size_t i = 0; i < 3; i++)
-        {
-            ImGui::Image((ImTextureID)gBuffer.colorBuffers[i], texSize, ImVec2(0, 1), ImVec2(1, 0));
-        }
-    }
-    ImGui::End();
-
-    ImGui::Begin("Shadow Mapping Settings");
-
-    if (ImGui::Button("Reset Camera")) {
-        resetCamera(&camera, &cameraController);
-    }
-
-    if (ImGui::CollapsingHeader("Light Direction")) {
-        ImGui::SliderFloat3("Direction", glm::value_ptr(directionalLight.direction), -1.0f, 1.0f);
-        directionalLight.direction = glm::normalize(directionalLight.direction);
-    }
-
-    if (ImGui::CollapsingHeader("Shadow Settings")) {
-        ImGui::SliderFloat("Min Bias", &directionalLight.minBias, 0.0001f, 0.01f);
-        ImGui::SliderFloat("Max Bias", &directionalLight.maxBias, 0.0001f, 0.1f);
-        ImGui::SliderFloat("Shadow Softness", &directionalLight.softness, 0.0f, 2.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Material Properties")) {
-        ImGui::SliderFloat("Ambient", &material.Ka, 0.0f, 1.0f);
-        ImGui::SliderFloat("Diffuse", &material.Kd, 0.0f, 1.0f);
-        ImGui::SliderFloat("Specular", &material.Ks, 0.0f, 1.0f);
-        ImGui::SliderFloat("Shininess", &material.Shininess, 2.0f, 256.0f);
-    }
-
-    if (ImGui::CollapsingHeader("Point Lights")) {
-        // Ensure the slider doesn't exceed MAX_POINT_LIGHTS
-        ImGui::SliderInt("Number of Lights", &currentPointLightCount, 0, MAX_POINT_LIGHTS);
-
-        for (int i = 0; i < currentPointLightCount; i++) {
-            ImGui::PushID(i);
-
-            // Create a collapsing header for each point light
-            if (ImGui::CollapsingHeader(("Point Light " + std::to_string(i)).c_str())) {
-                // Position
-                ImGui::SliderFloat3("Position", glm::value_ptr(pointLights[i].position), -20.0f, 20.0f);
-
-                // Radius (light falloff distance)
-                ImGui::SliderFloat("Radius", &pointLights[i].radius, 1.0f, 20.0f);
-
-                // Color
-                ImGui::ColorEdit3("Color", glm::value_ptr(pointLights[i].color));
-
-                // Intensity (alpha channel)
-                ImGui::SliderFloat("Intensity", &pointLights[i].color.a, 0.0f, 2.0f);
-            }
-
-            ImGui::PopID();
-
-            // Optional: Separator between lights
-            if (i < currentPointLightCount - 1) {
-                ImGui::Separator();
+    if (showDebugUI) {
+        ImGui::Begin("GBuffers"); {
+            ImVec2 texSize = ImVec2(gBuffer.width / 4, gBuffer.height / 4);
+            for (size_t i = 0; i < 3; i++)
+            {
+                ImGui::Image((ImTextureID)gBuffer.colorBuffers[i], texSize, ImVec2(0, 1), ImVec2(1, 0));
             }
         }
+        ImGui::End();
+
+        ImGui::Begin("Shadow Mapping Settings");
+
+        if (ImGui::Button("Reset Camera")) {
+            resetCamera(&camera, &cameraController);
+        }
+
+        // NEW: Visualization mode selection
+        if (ImGui::CollapsingHeader("Visualization Mode", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::RadioButton("Final Render", currentVisualizationMode == VisualizationMode::FINAL_RENDER)) {
+                currentVisualizationMode = VisualizationMode::FINAL_RENDER;
+            }
+            if (ImGui::RadioButton("Position Buffer", currentVisualizationMode == VisualizationMode::POSITION_BUFFER)) {
+                currentVisualizationMode = VisualizationMode::POSITION_BUFFER;
+            }
+            if (ImGui::RadioButton("Normal Buffer", currentVisualizationMode == VisualizationMode::NORMAL_BUFFER)) {
+                currentVisualizationMode = VisualizationMode::NORMAL_BUFFER;
+            }
+            if (ImGui::RadioButton("Albedo Buffer", currentVisualizationMode == VisualizationMode::ALBEDO_BUFFER)) {
+                currentVisualizationMode = VisualizationMode::ALBEDO_BUFFER;
+            }
+            if (ImGui::RadioButton("Shadow Map", currentVisualizationMode == VisualizationMode::SHADOW_MAP)) {
+                currentVisualizationMode = VisualizationMode::SHADOW_MAP;
+            }
+            if (ImGui::RadioButton("Light Visualization", currentVisualizationMode == VisualizationMode::LIGHT_VISUALIZATION)) {
+                currentVisualizationMode = VisualizationMode::LIGHT_VISUALIZATION;
+            }
+        }
+
+        // NEW: Control for point light count
+        if (ImGui::CollapsingHeader("Point Light Settings")) {
+            ImGui::SliderInt("Point Light Count", &currentPointLightCount, 0, MAX_POINT_LIGHTS);
+
+            // NEW: Add controls for modifying point light properties
+            ImGui::Text("Selected Point Light Properties");
+            static int selectedLightIndex = 0;
+            ImGui::SliderInt("Light Index", &selectedLightIndex, 0, currentPointLightCount - 1);
+
+            if (selectedLightIndex >= 0 && selectedLightIndex < currentPointLightCount) {
+                ImGui::SliderFloat3("Position", glm::value_ptr(pointLights[selectedLightIndex].position), -15.0f, 15.0f);
+                ImGui::ColorEdit3("Light Color", glm::value_ptr(pointLights[selectedLightIndex].color));
+                ImGui::SliderFloat("Light Radius", &pointLights[selectedLightIndex].radius, 1.0f, 20.0f);
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Light Direction")) {
+            ImGui::SliderFloat3("Direction", glm::value_ptr(directionalLight.direction), -1.0f, 1.0f);
+            directionalLight.direction = glm::normalize(directionalLight.direction);
+        }
+
+        if (ImGui::CollapsingHeader("Shadow Settings")) {
+            ImGui::SliderFloat("Min Bias", &directionalLight.minBias, 0.0001f, 0.01f);
+            ImGui::SliderFloat("Max Bias", &directionalLight.maxBias, 0.0001f, 0.1f);
+            ImGui::SliderFloat("Shadow Softness", &directionalLight.softness, 0.0f, 2.0f);
+        }
+
+        if (ImGui::CollapsingHeader("Material Properties")) {
+            ImGui::SliderFloat("Ambient", &material.Ka, 0.0f, 1.0f);
+            ImGui::SliderFloat("Diffuse", &material.Kd, 0.0f, 1.0f);
+            ImGui::SliderFloat("Specular", &material.Ks, 0.0f, 1.0f);
+            ImGui::SliderFloat("Shininess", &material.Shininess, 2.0f, 256.0f);
+        }
+
+        // Shadow map debug view
+        ImGui::Text("Shadow Map Debug View");
+        ImGui::Image((ImTextureID)(intptr_t)shadowMap.depthTexture, ImVec2(256, 256), ImVec2(0, 1), ImVec2(1, 0));
+
+        ImGui::End();
     }
 
-    // Shadow map debug view
-    ImGui::Text("Shadow Map Debug View");
-    ImGui::Image((ImTextureID)(intptr_t)shadowMap.depthTexture, ImVec2(256, 256), ImVec2(0, 1), ImVec2(1, 0));
+    // NEW: Add a simple status bar at the bottom of the screen
+    {
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoBackground;
 
-    ImGui::End();
+        const float PAD = 10.0f;
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImVec2 work_pos = viewport->WorkPos;
+        ImVec2 work_size = viewport->WorkSize;
+        ImVec2 window_pos, window_pos_pivot;
+        window_pos.x = work_pos.x + PAD;
+        window_pos.y = work_pos.y + work_size.y - PAD;
+        window_pos_pivot.x = 0.0f;
+        window_pos_pivot.y = 1.0f;
+
+        ImGui::SetNextWindowPos(window_pos, ImGuiCond_Always, window_pos_pivot);
+        ImGui::SetNextWindowBgAlpha(0.35f);
+
+        if (ImGui::Begin("Status Bar", nullptr, window_flags)) {
+            ImGui::Text("FPS: %.1f", 1.0f / deltaTime);
+            ImGui::SameLine(100);
+
+            const char* modeNames[] = {
+                "Final Render", "Position Buffer", "Normal Buffer",
+                "Albedo Buffer", "Shadow Map", "Light Visualization"
+            };
+            ImGui::Text("Mode: %s", modeNames[(int)currentVisualizationMode]);
+
+            ImGui::SameLine(300);
+            ImGui::Text("Press H to toggle UI");
+
+            ImGui::SameLine(500);
+            ImGui::Text("Active Lights: %d", currentPointLightCount);
+        }
+        ImGui::End();
+    }
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+// NEW: Key callback function
+void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_H && action == GLFW_PRESS) {
+        showDebugUI = !showDebugUI;
+    }
+
+    // Number keys to switch visualization modes
+    if (action == GLFW_PRESS) {
+        switch (key) {
+        case GLFW_KEY_1:
+            currentVisualizationMode = VisualizationMode::FINAL_RENDER;
+            break;
+        case GLFW_KEY_2:
+            currentVisualizationMode = VisualizationMode::POSITION_BUFFER;
+            break;
+        case GLFW_KEY_3:
+            currentVisualizationMode = VisualizationMode::NORMAL_BUFFER;
+            break;
+        case GLFW_KEY_4:
+            currentVisualizationMode = VisualizationMode::ALBEDO_BUFFER;
+            break;
+        case GLFW_KEY_5:
+            currentVisualizationMode = VisualizationMode::SHADOW_MAP;
+            break;
+        case GLFW_KEY_6:
+            currentVisualizationMode = VisualizationMode::LIGHT_VISUALIZATION;
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
@@ -376,6 +562,7 @@ GLFWwindow* initWindow(const char* title, int width, int height) {
 
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
+    glfwSetKeyCallback(window, keyCallback); // NEW: Register key callback
 
     if (!gladLoadGL(glfwGetProcAddress)) {
         printf("GLAD failed to load OpenGL headers\n");
@@ -399,8 +586,14 @@ GLFWwindow* initWindow(const char* title, int width, int height) {
 }
 
 int main() {
-    GLFWwindow* window = initWindow("Shadow Mapping", screenWidth, screenHeight);
+    GLFWwindow* window = initWindow("Advanced Rendering", screenWidth, screenHeight);
+
+    setupCulling();
+
     if (!window) return -1;
+
+    // NEW: Shader for debug visualization
+    ew::Shader debugViewShader = ew::Shader("assets/fsTriangle.vert", "assets/debugView.frag");
 
     // Shader initialization
     ew::Shader newShader = ew::Shader("assets/full.vert", "assets/full.frag");
@@ -414,8 +607,7 @@ int main() {
     ew::Model monkeyModel("assets/suzanne.obj");
     GLuint brickTexture = ew::loadTexture("assets/brick_color.jpg");
 
-    ew::Mesh sphereMesh = ew::createSphere(1.0f, 8);
-
+    sphereMesh.load(ew::createSphere(0.5f, 20));
     // Camera setup
     camera.position = glm::vec3(0.0f, 10.0f, 20.0f);
     camera.target = glm::vec3(0.0f, 0.0f, 0.0f);
@@ -473,12 +665,15 @@ int main() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Create ground plane
-    ew::Mesh plane = ew::createPlane(20, 20, 10);
+    ew::Mesh plane = ew::createPlane(30, 30, 10);
     planeTransform.position = glm::vec3(0.0f, -5.0f, -5.0f);
 
     // Create fullscreen quad (using a single triangle that covers the screen)
     GLuint dummyVAO;
     glGenVertexArrays(1, &dummyVAO);
+
+    // Distribute point lights
+    distributePointLights();
 
     // Main render loop
     while (!glfwWindowShouldClose(window)) {
@@ -508,6 +703,9 @@ int main() {
         glViewport(0, 0, gBuffer.width, gBuffer.height);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
 
         gBufferShader.use();
         gBufferShader.setInt("_MainTexture", 0);
@@ -549,38 +747,10 @@ int main() {
         deferredShader.setInt("_gAlbedo", 2);
         deferredShader.setInt("_ShadowMap", 3);
 
-
+        // Use only the active number of point lights (NEW)
         deferredShader.setInt("_PointLightCount", currentPointLightCount);
-        // Initialize point lights
-        const float GRID_OFFSET = SPACING * (GRID_SIZE / 2.0f);
 
-        for (int i = 0; i < currentPointLightCount; i++) {
-            // Spread lights around the grid based on current light count
-            switch (i % 4) {
-            case 0:
-                pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, -GRID_OFFSET);
-                pointLights[i].color = glm::vec4(1.0f, 0.3f, 0.3f, 1.0f);  // Red
-                break;
-            case 1:
-                pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, -GRID_OFFSET);
-                pointLights[i].color = glm::vec4(0.3f, 1.0f, 0.3f, 1.0f);  // Green
-                break;
-            case 2:
-                pointLights[i].position = glm::vec3(-GRID_OFFSET, 5.0f, GRID_OFFSET);
-                pointLights[i].color = glm::vec4(0.3f, 0.3f, 1.0f, 1.0f);  // Blue
-                break;
-            case 3:
-                pointLights[i].position = glm::vec3(GRID_OFFSET, 5.0f, GRID_OFFSET);
-                pointLights[i].color = glm::vec4(1.0f, 1.0f, 0.3f, 1.0f);  // Yellow
-                break;
-            }
-
-            // Set high radius to cover the entire grid
-            pointLights[i].radius = 15.0f;
-        }
-
-
-        // Set point light uniforms only for the current number of lights
+        // Set point light uniforms for all lights
         for (int i = 0; i < currentPointLightCount; i++) {
             std::string prefix = "_PointLights[" + std::to_string(i) + "].";
             deferredShader.setVec3(prefix + "position", pointLights[i].position);
@@ -597,56 +767,96 @@ int main() {
         glBindVertexArray(dummyVAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
-        // 4. Copy the result to the default framebuffer
+        // 4. Handle visualization modes (NEW)
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, screenWidth, screenHeight);
         glClearColor(0.6f, 0.8f, 0.92f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // Use a simple shader to render the final image to the screen
-        // For simplicity, we're using the default screen rendering
-        // Blit depth buffer from G-Buffer to framebuffer
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer.fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer.fbo);
-        glBlitFramebuffer(
-            0, 0, screenWidth, screenHeight, 0, 0, screenWidth, screenHeight,
-            GL_DEPTH_BUFFER_BIT, GL_NEAREST
-        );
+        // Choose what to display based on current visualization mode
+        switch (currentVisualizationMode) {
+        case VisualizationMode::FINAL_RENDER:
+            // Blit the final image from the lighting pass to the default framebuffer
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(
+                0, 0, framebuffer.width, framebuffer.height,
+                0, 0, screenWidth, screenHeight,
+                GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST
+            );
 
-        // Draw light orbs
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
-        glDisable(GL_CULL_FACE);
+            // Draw light orbs when in final render mode
+            if (currentVisualizationMode == VisualizationMode::FINAL_RENDER ||
+                currentVisualizationMode == VisualizationMode::LIGHT_VISUALIZATION) {
+                drawLights(lightOrbShader, sphereMesh);
+            }
+            break;
 
-        lightOrbShader.use();
-        lightOrbShader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
+        case VisualizationMode::POSITION_BUFFER:
+            // Draw the position buffer
+            drawDebugView(debugViewShader, gBuffer.colorBuffers[0]);
+            break;
 
-        for (int i = 0; i < currentPointLightCount; i++) {
-            glm::mat4 m = glm::mat4(1.0f);
-            m = glm::translate(m, pointLights[i].position);
-            m = glm::scale(m, glm::vec3(0.5f));
+        case VisualizationMode::NORMAL_BUFFER:
+            // Draw the normal buffer
+            drawDebugView(debugViewShader, gBuffer.colorBuffers[1]);
+            break;
 
-            lightOrbShader.setMat4("_Model", m);
+        case VisualizationMode::ALBEDO_BUFFER:
+            // Draw the albedo buffer
+            drawDebugView(debugViewShader, gBuffer.colorBuffers[2]);
+            break;
 
-            // Use RGB components and normalize intensity
-            glm::vec3 lightColor = glm::vec3(pointLights[i].color);
-            float intensity = pointLights[i].color.a;
-            lightOrbShader.setVec3("_Color", lightColor * intensity);
+        case VisualizationMode::SHADOW_MAP:
+            // Draw the shadow map
+            drawDebugView(debugViewShader, shadowMap.depthTexture);
+            break;
 
+        case VisualizationMode::LIGHT_VISUALIZATION:
+            // First, get a clean slate with a dark background
+            glClearColor(0.02f, 0.02f, 0.05f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            // Use blending for additive light effects
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            glDisable(GL_DEPTH_TEST); // No depth testing for pure light viz
+
+            // Draw the light orbs with more intensity
+            lightOrbShader.use();
+            lightOrbShader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
+
+            // Draw directional light as a big sphere in the sky
+            glm::mat4 dirLightModel = glm::mat4(1.0f);
+            dirLightModel = glm::translate(dirLightModel, -directionalLight.direction * 15.0f);
+            dirLightModel = glm::scale(dirLightModel, glm::vec3(5.0f)); // Make it bigger
+
+            lightOrbShader.setMat4("_Model", dirLightModel);
+            lightOrbShader.setVec3("_Color", directionalLight.color * 2.0f); // Make it brighter
             sphereMesh.draw();
+
+            // Draw all active point lights with exaggerated brightness
+            for (int i = 0; i < currentPointLightCount; i++) {
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), pointLights[i].position);
+                model = glm::scale(model, glm::vec3(pointLights[i].radius * 0.3f)); // Bigger for visualization
+
+                lightOrbShader.setMat4("_Model", model);
+                glm::vec3 lightColor = glm::vec3(pointLights[i].color) * 3.0f; // Exaggerate brightness
+                lightOrbShader.setVec3("_Color", lightColor);
+
+                sphereMesh.draw();
+            }
+
+            // Restore state
+            glEnable(GL_DEPTH_TEST);
+            glDisable(GL_BLEND);
+            break;
         }
 
-        // Blit final image to screen
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, framebuffer.width, framebuffer.height,
-            0, 0, screenWidth, screenHeight,
-            GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-        // Draw UI
+        // 5. Draw UI
         drawUI();
 
-        // Swap buffers
+        // 6. Swap buffers
         glfwSwapBuffers(window);
     }
 
