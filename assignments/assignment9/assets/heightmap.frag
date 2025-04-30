@@ -1,52 +1,73 @@
 #version 450 core
 
-// Inputs from vertex shader
-in vec2 TexCoords;
-in vec3 FragPos;
+in vec3 WorldPos;
 in vec3 Normal;
+in vec2 TexCoord;
 
-// Output color
 out vec4 FragColor;
 
-// Uniforms
 uniform sampler2D _HeightmapTexture;
+uniform float _AmbientStrength;
+uniform vec3 _LightDir;
+uniform vec3 _LightColor;
+uniform float _SpecularStrength;
+uniform float _Shininess;
+
+// Color mapping
+uniform int _UseColorMap;
+uniform float _WaterLevel;
+uniform vec3 _WaterColor;
+uniform vec3 _LowlandColor;
+uniform vec3 _HighlandColor;
+uniform vec3 _MountainColor;
+
+uniform vec3 _CameraPos;
 
 void main()
 {
-    // Get base color from heightmap texture
-    vec4 texColor = texture(_HeightmapTexture, TexCoords);
+    // Sample height from texture for visualization or other uses
+    float height = texture(_HeightmapTexture, TexCoord).r;
     
-    // Simple shading: darker at lower elevations, brighter at higher elevations
-    // We can use the y component of FragPos as the height
-    float height = (FragPos.y + 16.0) / 64.0; // Normalize height based on range used in vertex generation
-    height = clamp(height, 0.0, 1.0);
+    // Default color is based on height grayscale
+    vec3 baseColor = vec3(height);
     
-    // Create a color gradient based on height
-    vec3 lowColor = vec3(0.0, 0.2, 0.5);   // Deep blue for low areas (water)
-    vec3 midColor = vec3(0.0, 0.5, 0.0);   // Green for mid-level areas
-    vec3 highColor = vec3(0.8, 0.8, 0.8);  // Gray/white for high areas (mountains)
-    
-    vec3 terrainColor;
-    if (height < 0.3) {
-        // Interpolate between low and mid color
-        float t = height / 0.3;
-        terrainColor = mix(lowColor, midColor, t);
-    } else {
-        // Interpolate between mid and high color
-        float t = (height - 0.3) / 0.7;
-        terrainColor = mix(midColor, highColor, t);
+    // Color mapping based on height
+    if (_UseColorMap == 1) {
+        if (height < _WaterLevel) {
+            baseColor = _WaterColor;
+        }
+        else if (height < 0.4) {
+            float t = (height - _WaterLevel) / (0.4 - _WaterLevel);
+            baseColor = mix(_WaterColor, _LowlandColor, t);
+        }
+        else if (height < 0.7) {
+            float t = (height - 0.4) / (0.7 - 0.4);
+            baseColor = mix(_LowlandColor, _HighlandColor, t);
+        }
+        else {
+            float t = (height - 0.7) / (1.0 - 0.7);
+            baseColor = mix(_HighlandColor, _MountainColor, t);
+        }
     }
     
-    // Apply simple directional lighting
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
-    float diff = max(dot(Normal, lightDir), 0.0);
-    vec3 diffuse = diff * vec3(1.0);
+    // Ambient lighting
+    vec3 ambient = _AmbientStrength * _LightColor;
     
-    // Add ambient light
-    vec3 ambient = vec3(0.3);
+    // Diffuse lighting
+    vec3 normal = normalize(Normal);
+    vec3 lightDir = normalize(-_LightDir);
+    float diff = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = diff * _LightColor;
     
-    // Combine lighting and color
-    vec3 result = (ambient + diffuse) * terrainColor;
+    // Specular lighting
+    vec3 viewDir = normalize(_CameraPos - WorldPos);
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), _Shininess);
+    vec3 specular = _SpecularStrength * spec * _LightColor;
     
+    // Final lighting result
+    vec3 result = (ambient + diffuse + specular) * baseColor;
+    
+    // Output final color
     FragColor = vec4(result, 1.0);
 }

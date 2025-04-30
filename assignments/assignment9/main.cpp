@@ -19,8 +19,9 @@
 #include <ew/texture.h>
 #include <ew/mesh.h>
 #include <vector>
+#include <string>
 
-#include "dh/heightMap.h" // Include our heightmap class
+#include "dh/heightMap.h"
 
 // Global state
 int screenWidth = 1080;
@@ -34,10 +35,17 @@ const float M_PI = 3.14159265358979323846f;
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 GLFWwindow* initWindow(const char* title, int width, int height);
 void drawUI();
+void loadSelectedHeightmap();
 
 // Camera and transforms
 ew::Camera camera;
 ew::CameraController cameraController;
+
+// Available heightmaps
+struct HeightmapFile {
+    std::string name;
+    std::string path;
+};
 
 // Heightmap settings
 struct HeightmapSettings {
@@ -47,7 +55,27 @@ struct HeightmapSettings {
     float ambientStrength = 0.3f;
     glm::vec3 lightDir = glm::normalize(glm::vec3(1.0f, -1.0f, 1.0f));
     glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 0.9f);
+    int selectedHeightmap = 0;
+    bool useColorMap = true;
+    float waterLevel = 0.2f;
+    glm::vec3 waterColor = glm::vec3(0.0f, 0.2f, 0.8f);
+    glm::vec3 lowlandColor = glm::vec3(0.0f, 0.5f, 0.0f);
+    glm::vec3 highlandColor = glm::vec3(0.5f, 0.5f, 0.0f);
+    glm::vec3 mountainColor = glm::vec3(0.5f, 0.5f, 0.5f);
+    float shininess = 32.0f;
+    float specularStrength = 0.2f;
 } heightmapSettings;
+
+// Available heightmaps
+std::vector<HeightmapFile> heightmapFiles = {
+    {"North America", "assets/northamericaHeightMap.png"},
+    {"Earth", "assets/earth.jpg"},
+    {"Iceland", "assets/iceland_heightmap.png"},
+    {"Breath Of The Wild", "assets/botw.jpg"}
+};
+
+// Current selected heightmap path
+std::string currentHeightmapPath = "assets/northamericaHeightMap.png";
 
 // Mesh and dimensions
 ew::Mesh heightmapMesh;
@@ -62,6 +90,26 @@ void resetCamera(ew::Camera* camera, ew::CameraController* controller) {
     controller->pitch = -45.0f;
 }
 
+void loadSelectedHeightmap() {
+    // Update the current heightmap path
+    currentHeightmapPath = heightmapFiles[heightmapSettings.selectedHeightmap].path;
+
+    // Load the height data
+    std::vector<float> heightData = dh::loadHeightmapData(currentHeightmapPath.c_str(), true);
+
+    // Get dimensions
+    dh::getHeightmapDimensions(currentHeightmapPath.c_str(), heightmapWidth, heightmapHeight);
+
+    // Create the mesh with current scale values
+    heightmapMesh = dh::createHeightmapMesh(heightData, heightmapWidth, heightmapHeight, heightmapSettings.scale);
+
+    // Load the texture for visualization
+    if (heightmapSettings.texture) {
+        glDeleteTextures(1, &heightmapSettings.texture);
+    }
+    heightmapSettings.texture = ew::loadTexture(currentHeightmapPath.c_str());
+}
+
 void drawUI() {
     ImGui_ImplGlfw_NewFrame();
     ImGui_ImplOpenGL3_NewFrame();
@@ -73,16 +121,50 @@ void drawUI() {
         resetCamera(&camera, &cameraController);
     }
 
+    // Heightmap selection
+    ImGui::Separator();
+    ImGui::Text("Heightmap Selection");
+
+    // Create array of names for combo box
+    std::vector<const char*> heightmapNames;
+    for (const auto& hm : heightmapFiles) {
+        heightmapNames.push_back(hm.name.c_str());
+    }
+
+    // Heightmap selection combo box
+    if (ImGui::Combo("Select Heightmap", &heightmapSettings.selectedHeightmap,
+        heightmapNames.data(), heightmapNames.size())) {
+        loadSelectedHeightmap();
+    }
+
     // Scale controls
+    ImGui::Separator();
     ImGui::Text("Heightmap Scale");
     ImGui::SliderFloat("X Scale", &heightmapSettings.scale.x, 10.0f, 200.0f);
     ImGui::SliderFloat("Y Scale (Height)", &heightmapSettings.scale.y, 1.0f, 50.0f);
     ImGui::SliderFloat("Z Scale", &heightmapSettings.scale.z, 10.0f, 200.0f);
 
+    // Rendering options
+    ImGui::Separator();
+    ImGui::Text("Rendering");
+    ImGui::Checkbox("Wireframe", &heightmapSettings.wireframe);
+    ImGui::Checkbox("Use Color Map", &heightmapSettings.useColorMap);
+
+    // Color mapping
+    if (heightmapSettings.useColorMap) {
+        ImGui::SliderFloat("Water Level", &heightmapSettings.waterLevel, 0.0f, 0.5f);
+        ImGui::ColorEdit3("Water Color", &heightmapSettings.waterColor.x);
+        ImGui::ColorEdit3("Lowland Color", &heightmapSettings.lowlandColor.x);
+        ImGui::ColorEdit3("Highland Color", &heightmapSettings.highlandColor.x);
+        ImGui::ColorEdit3("Mountain Color", &heightmapSettings.mountainColor.x);
+    }
+
     // Lighting controls
     ImGui::Separator();
     ImGui::Text("Lighting");
     ImGui::SliderFloat("Ambient", &heightmapSettings.ambientStrength, 0.0f, 1.0f);
+    ImGui::SliderFloat("Specular", &heightmapSettings.specularStrength, 0.0f, 1.0f);
+    ImGui::SliderFloat("Shininess", &heightmapSettings.shininess, 1.0f, 128.0f);
     ImGui::ColorEdit3("Light Color", &heightmapSettings.lightColor.x);
 
     float lightDirAngles[2] = {
@@ -99,19 +181,8 @@ void drawUI() {
         heightmapSettings.lightDir = glm::normalize(heightmapSettings.lightDir);
     }
 
-    // Rendering options
-    ImGui::Separator();
-    ImGui::Checkbox("Wireframe", &heightmapSettings.wireframe);
-
     if (ImGui::Button("Regenerate Mesh")) {
-        // Load the height data
-        std::vector<float> heightData = dh::loadHeightmapData("assets/northamericaHeightMap.png", true);
-
-        // Update dimensions if needed
-        dh::getHeightmapDimensions("assets/northamericaHeightMap.png", heightmapWidth, heightmapHeight);
-
-        // Create the mesh with new scale values
-        heightmapMesh = dh::createHeightmapMesh(heightData, heightmapWidth, heightmapHeight, heightmapSettings.scale);
+        loadSelectedHeightmap();
     }
 
     ImGui::Text("Heightmap: %dx%d", heightmapWidth, heightmapHeight);
@@ -182,20 +253,8 @@ int main() {
     camera.fov = 60.0f;
     resetCamera(&camera, &cameraController);
 
-    // Create the heightmap
-    std::vector<float> heightData = dh::loadHeightmapData("assets/northamericaHeightMap.png", true);
-
-    // Get dimensions using heightmap class function
-    if (!dh::getHeightmapDimensions("assets/northamericaHeightMap.png", heightmapWidth, heightmapHeight)) {
-        printf("Failed to determine heightmap dimensions!\n");
-        heightmapWidth = heightmapHeight = sqrt(heightData.size());
-    }
-
-    // Create the mesh
-    heightmapMesh = dh::createHeightmapMesh(heightData, heightmapWidth, heightmapHeight, heightmapSettings.scale);
-
-    // Load the texture for visualization using the existing texture loading utility
-    heightmapSettings.texture = ew::loadTexture("assets/northamericaHeightMap.png");
+    // Load the initial heightmap
+    loadSelectedHeightmap();
 
     // Main render loop
     while (!glfwWindowShouldClose(window)) {
@@ -230,6 +289,18 @@ int main() {
         heightmapShader.setFloat("_AmbientStrength", heightmapSettings.ambientStrength);
         heightmapShader.setVec3("_LightDir", heightmapSettings.lightDir);
         heightmapShader.setVec3("_LightColor", heightmapSettings.lightColor);
+
+        // Enhanced lighting uniforms
+        heightmapShader.setFloat("_SpecularStrength", heightmapSettings.specularStrength);
+        heightmapShader.setFloat("_Shininess", heightmapSettings.shininess);
+
+        // Color mapping uniforms
+        heightmapShader.setInt("_UseColorMap", heightmapSettings.useColorMap ? 1 : 0);
+        heightmapShader.setFloat("_WaterLevel", heightmapSettings.waterLevel);
+        heightmapShader.setVec3("_WaterColor", heightmapSettings.waterColor);
+        heightmapShader.setVec3("_LowlandColor", heightmapSettings.lowlandColor);
+        heightmapShader.setVec3("_HighlandColor", heightmapSettings.highlandColor);
+        heightmapShader.setVec3("_MountainColor", heightmapSettings.mountainColor);
 
         // Bind the texture
         glActiveTexture(GL_TEXTURE0);
