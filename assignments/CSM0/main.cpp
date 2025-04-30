@@ -339,8 +339,7 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 			model.draw();
 
 			//also render plane
-			shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -4.0f, 0.0f)));
-			plane.draw();
+			//shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -4.0f, 0.0f)));
 		}
 
 		glCullFace(GL_BACK);
@@ -410,7 +409,7 @@ std::vector<glm::mat4> calculateLightSpaceMatrices()
 		(
 			light.position,
 			center,
-			glm::vec3(0.0f, -1.0f, 0.0f)
+			glm::vec3(0.0f, 1.0f, 0.0f)
 		);
 
 		//calc bounding box
@@ -443,16 +442,34 @@ std::vector<glm::mat4> calculateLightSpaceMatrices()
 		lightView = calculateLightSpaceWithTexelSnapping(lightView, center, texelSize);
 
 		//add padding to bounding box
-		const float zMultiplier = 10.0f;
-		minZ *= zMultiplier;
-		maxZ *= zMultiplier;
+		//const float zMultiplier = 10.0f;
+		//minZ *= zMultiplier;
+		//maxZ *= zMultiplier;
+
+		constexpr float zMult = 10.0f;
+		if (minZ < 0)
+		{
+			minZ *= zMult;
+		}
+		else
+		{
+			minZ /= zMult;
+		}
+		if (maxZ < 0)
+		{
+			maxZ /= zMult;
+		}
+		else
+		{
+			maxZ *= zMult;
+		}
 
 		//orthographic projection
 		glm::mat4 lightProjection = glm::ortho
 		(
 			minX, maxX,
 			minY, maxY,
-			-maxZ, -minZ
+			maxZ, minZ
 		);
 
 		matrices[i] = lightProjection * lightView;

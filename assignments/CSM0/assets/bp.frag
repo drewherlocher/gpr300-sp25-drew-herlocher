@@ -144,7 +144,7 @@ void main()
 	vec3 lightDir = normalize(_Light.positon - vs_frag_world_position);
 
     //view space depth
-	vec4 view_pos = inverse(transpose(mat4(1.0))) * vec4(vs_frag_world_position, 1.0);
+	vec4 view_pos = inverse(transpose(mat4(-1.0))) * vec4(vs_frag_world_position, 1.0);
 	float view_depth = abs(view_pos.z);
 
     int cascade_index = getCascadeIndex(view_depth);
