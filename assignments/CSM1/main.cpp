@@ -109,6 +109,9 @@ struct DepthBuffer
 	float cascadeSplits[MAX_CASCADES];  // Normalized distances for cascade splits
 	glm::mat4 lightViewProj[MAX_CASCADES]; // View-projection matrix for each cascade
 
+	// Add these for visualization
+	GLuint cascadeVisualizationTextures[MAX_CASCADES];
+
 	void Initialize(float dWidth, float dHeight)
 	{
 		width = dWidth;
@@ -144,6 +147,19 @@ struct DepthBuffer
 		cascadeSplits[0] = 0.05f;  // First cascade covers very close objects (5%)
 		cascadeSplits[1] = 0.25f;  // Second cascade extends to medium distance (25%)
 		cascadeSplits[2] = 1.0f;   // Third cascade covers the rest
+
+       // Create separate textures for visualization
+       glGenTextures(MAX_CASCADES, cascadeVisualizationTextures);
+       for (int i = 0; i < MAX_CASCADES; i++) 
+	   {
+           glBindTexture(GL_TEXTURE_2D, cascadeVisualizationTextures[i]);
+           glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, dWidth, dHeight, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+           glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+       }
 	}
 } depthBuffer;
 
@@ -342,6 +358,10 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 		// Draw the plane too
 		shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -2.0f, 0.0f)));
 		plane.draw();
+
+	    // After rendering this cascade, copy the depth data to visualization texture
+        glBindTexture(GL_TEXTURE_2D, depthBuffer.cascadeVisualizationTextures[cascade]);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, depthBuffer.width, depthBuffer.height);
 	}
 
 	// Reset to default framebuffer
@@ -522,13 +542,13 @@ void drawUI() {
 
 		ImGui::Separator(); //depth image
 		ImGui::Text("Cascade 0:");
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.depthTexture, ImVec2(256, 256), ImVec2(0, 0), ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(), 0); // Layer 0
+		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[0], ImVec2(256, 256));
 
 		ImGui::Text("Cascade 1:");
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.depthTexture, ImVec2(256, 256), ImVec2(0, 0), ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(), 1); // Layer 1
+		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[1], ImVec2(256, 256));
 
 		ImGui::Text("Cascade 2:");
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.depthTexture, ImVec2(256, 256), ImVec2(0, 0), ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(), 2); // Layer 2
+		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[2], ImVec2(256, 256));
 	}
 	ImGui::Separator();
 	if (ImGui::CollapsingHeader("Lighting"))
