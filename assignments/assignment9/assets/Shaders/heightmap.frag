@@ -1,18 +1,14 @@
 #version 450 core
-
 in vec3 WorldPos;
 in vec3 Normal;
 in vec2 TexCoord;
-
 out vec4 FragColor;
-
 uniform sampler2D _HeightmapTexture;
 uniform float _AmbientStrength;
 uniform vec3 _LightDir;
 uniform vec3 _LightColor;
 uniform float _SpecularStrength;
 uniform float _Shininess;
-
 // Color mapping
 uniform int _UseColorMap;
 uniform float _WaterLevel;
@@ -20,13 +16,41 @@ uniform vec3 _WaterColor;
 uniform vec3 _LowlandColor;
 uniform vec3 _HighlandColor;
 uniform vec3 _MountainColor;
-
 uniform vec3 _CameraPos;
+// Blur settings
+uniform int _BlurRadius;
+uniform int _UseBlur;
+
+// Box blur function
+float boxBlur(sampler2D tex, vec2 uv, int radius) {
+    float result = 0.0;
+    float count = 0.0;
+    
+    // Get texture dimensions
+    vec2 texSize = textureSize(_HeightmapTexture, 0);
+    vec2 texelSize = 1.0 / texSize;
+    
+    // Box blur kernel
+    for (int x = -radius; x <= radius; x++) {
+        for (int y = -radius; y <= radius; y++) {
+            vec2 offset = vec2(float(x), float(y)) * texelSize;
+            result += texture(tex, uv + offset).r;
+            count += 1.0;
+        }
+    }
+    
+    return result / count;
+}
 
 void main()
 {
-    // Sample height from texture for visualization or other uses
-    float height = texture(_HeightmapTexture, TexCoord).r;
+    // Sample height from texture with optional blur
+    float height;
+    if (_UseBlur == 1 && _BlurRadius > 0) {
+        height = boxBlur(_HeightmapTexture, TexCoord, _BlurRadius);
+    } else {
+        height = texture(_HeightmapTexture, TexCoord).r;
+    }
     
     // Default color is based on height grayscale
     vec3 baseColor = vec3(height);

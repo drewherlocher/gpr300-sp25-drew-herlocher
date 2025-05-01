@@ -1,10 +1,8 @@
-/*
-*   Author: dh
-*/
+
 #include "heightmap.h"
 #include "../ew/external/glad.h"
 #include "../ew/external/stb_image.h"
-#include "../ew/texture.h" // Include texture loading
+#include "../ew/texture.h"
 #include <algorithm>
 #include <iostream>
 
@@ -25,43 +23,74 @@ namespace dh {
 
     std::vector<float> loadHeightmapData(const char* filePath, bool normalizeHeight) {
         int width, height, numComponents;
-        unsigned char* data = stbi_load(filePath, &width, &height, &numComponents, 1); // Force 1 component (grayscale)
+        unsigned char* data = stbi_load(filePath, &width, &height, &numComponents, 1);
 
         if (data == nullptr) {
             std::printf("Failed to load heightmap image %s\n", filePath);
             return std::vector<float>();
         }
 
-        std::vector<float> heights(width * height);
+        std::printf("Loaded heightmap: %s (%dx%d, %d components)\n",
+            filePath, width, height, numComponents);
+
+        // Create height data array
+        std::vector<float> heights(width * height, 0.0f);
+
+        // First pass - collect statistics about the data
         float minHeight = 255.0f;
         float maxHeight = 0.0f;
 
-        if (normalizeHeight) {
-            // Find min and max heights for normalization
-            for (int i = 0; i < width * height; i++) {
-                float h = static_cast<float>(data[i]);
+        for (int i = 0; i < width * height; i++) {
+            float h = static_cast<float>(data[i]);
+            heights[i] = h;
+
+            if (normalizeHeight) {
                 minHeight = std::min(minHeight, h);
                 maxHeight = std::max(maxHeight, h);
             }
         }
 
+        // Debug statistics
+        std::printf("Raw height range: min=%f, max=%f\n", minHeight, maxHeight);
+
+        // Apply normalization
         float range = maxHeight - minHeight;
-        for (int i = 0; i < width * height; i++) {
-            if (normalizeHeight && range > 0) {
-                heights[i] = (static_cast<float>(data[i]) - minHeight) / range;
+        if (normalizeHeight && range > 0.001f) {
+            for (int i = 0; i < width * height; i++) {
+                heights[i] = (heights[i] - minHeight) / range;
             }
-            else {
-                heights[i] = static_cast<float>(data[i]) / 255.0f;
+            std::printf("Normalized heights to 0-1 range\n");
+        }
+        else {
+            // Just scale to 0-1
+            for (int i = 0; i < width * height; i++) {
+                heights[i] /= 255.0f;
             }
+            std::printf("Scaled heights by 1/255\n");
         }
 
+        // Detect and report any anomalies
+        int zeroCount = 0;
+        int oneCount = 0;
+        for (int i = 0; i < std::min(10000, (int)heights.size()); i++) {
+            if (heights[i] < 0.001f) zeroCount++;
+            if (heights[i] > 0.999f) oneCount++;
+        }
+
+        float zeroPercent = (float)zeroCount / std::min(10000, (int)heights.size()) * 100.0f;
+        float onePercent = (float)oneCount / std::min(10000, (int)heights.size()) * 100.0f;
+
+        std::printf("First 10k samples: %.1f%% near zero, %.1f%% near one\n",
+            zeroPercent, onePercent);
+
+        // Release the image data
         stbi_image_free(data);
         return heights;
     }
-
     ew::Mesh createHeightmapMesh(const std::vector<float>& heightmapData, int width, int height, glm::vec3 scale) {
-        if (heightmapData.empty() || width <= 0 || height <= 0) {
-            std::printf("Invalid heightmap data or dimensions\n");
+        if (heightmapData.size() != width * height) {
+            std::printf("ERROR in createHeightmapMesh: Data size (%zu) doesn't match dimensions (%d x %d = %d)\n",
+                heightmapData.size(), width, height, width * height);
             return ew::Mesh(ew::MeshData{}); // Return empty mesh
         }
 
@@ -71,10 +100,23 @@ namespace dh {
         vertices.reserve(width * height);
         indices.reserve((width - 1) * (height - 1) * 6);
 
-        for (int z = 0; z < height; z++) {
+        for(int z = 0; z < height; z++) {
             for (int x = 0; x < width; x++) {
                 ew::Vertex vertex;
 
+                size_t index = z * width + x;
+                if (index >= heightmapData.size()) {
+                    std::printf("ERROR: Index out of bounds in createHeightmapMesh: %zu >= %zu\n",
+                        index, heightmapData.size());
+                    continue;
+                }
+
+                float heightValue = heightmapData[index];
+                // Ensure height is within a reasonable range
+                if (std::isnan(heightValue) || std::isinf(heightValue)) {
+                    std::printf("WARNING: Invalid height value at (%d,%d)\n", x, z);
+                    heightValue = 0.0f;
+                }
                 float fx = (static_cast<float>(x) / (width - 1) - 0.5f) * scale.x;
                 float fz = (static_cast<float>(z) / (height - 1) - 0.5f) * scale.z;
                 float fy = heightmapData[z * width + x] * scale.y;
@@ -82,7 +124,7 @@ namespace dh {
                 vertex.pos = glm::vec3(fx, fy, fz);
                 vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f); // default normal
                 vertex.uv = glm::vec2(static_cast<float>(x) / (width - 1), static_cast<float>(z) / (height - 1));
-                vertex.tangent = glm::vec3(1.0f, 0.0f, 0.0f); // optional, unused for now
+                vertex.tangent = glm::vec3(1.0f, 0.0f, 0.0f);
 
                 // Calculate normal using central difference method if not at the edge
                 if (x > 0 && x < width - 1 && z > 0 && z < height - 1) {

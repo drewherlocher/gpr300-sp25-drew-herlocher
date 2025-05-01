@@ -36,7 +36,7 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 GLFWwindow* initWindow(const char* title, int width, int height);
 void drawUI();
 void loadSelectedHeightmap();
-
+std::vector<float> blurHeightmapData(const std::vector<float>& data, int width, int height, int radius);
 // Camera and transforms
 ew::Camera camera;
 ew::CameraController cameraController;
@@ -64,6 +64,9 @@ struct HeightmapSettings {
     glm::vec3 mountainColor = glm::vec3(0.5f, 0.5f, 0.5f);
     float shininess = 32.0f;
     float specularStrength = 0.2f;
+    bool useBlur = false;
+    int blurRadius = 1;
+
 } heightmapSettings;
 
 // Available heightmaps
@@ -90,26 +93,95 @@ void resetCamera(ew::Camera* camera, ew::CameraController* controller) {
     controller->pitch = -45.0f;
 }
 
+std::vector<float> blurHeightmapData(const std::vector<float>& data, int width, int height, int radius) {
+    std::vector<float> result(data.size(), 0.0f);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float sum = 0.0f;
+            int count = 0;
+            // Box blur kernel
+            for (int ky = -radius; ky <= radius; ++ky) {
+                for (int kx = -radius; kx <= radius; ++kx) {
+                    int sx = x + kx;
+                    int sy = y + ky;
+
+                    // Check boundaries
+                    if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
+                        sum += data[sy * width + sx];
+                        count++;
+                    }
+                }
+            }
+            // Average
+            result[y * width + x] = sum / count;
+        }
+    }
+    return result;
+}
+
 void loadSelectedHeightmap() {
     // Update the current heightmap path
     currentHeightmapPath = heightmapFiles[heightmapSettings.selectedHeightmap].path;
+    std::printf("\n==== Loading heightmap: %s ====\n", currentHeightmapPath.c_str());
+
+    // Clean up previous texture
+    if (heightmapSettings.texture) {
+        glDeleteTextures(1, &heightmapSettings.texture);
+        heightmapSettings.texture = 0;
+    }
+
+    // First get dimensions
+    if (!dh::getHeightmapDimensions(currentHeightmapPath.c_str(), heightmapWidth, heightmapHeight)) {
+        std::printf("ERROR: Failed to get dimensions\n");
+        return;
+    }
+
+    std::printf("Dimensions: %dx%d\n", heightmapWidth, heightmapHeight);
+
+    // Check for extreme dimensions that might cause issues
+    if (heightmapWidth > 4096 || heightmapHeight > 4096) {
+        std::printf("WARNING: Very large heightmap detected. Performance may be impacted.\n");
+    }
+
+    if (heightmapWidth < 16 || heightmapHeight < 16) {
+        std::printf("WARNING: Very small heightmap detected. Quality may be poor.\n");
+    }
 
     // Load the height data
     std::vector<float> heightData = dh::loadHeightmapData(currentHeightmapPath.c_str(), true);
 
-    // Get dimensions
-    dh::getHeightmapDimensions(currentHeightmapPath.c_str(), heightmapWidth, heightmapHeight);
+    // Verify data
+    if (heightData.empty()) {
+        std::printf("ERROR: Failed to load height data\n");
+        return;
+    }
 
-    // Create the mesh with current scale values
+    if (heightData.size() != (size_t)(heightmapWidth * heightmapHeight)) {
+        std::printf("ERROR: Data size mismatch! Expected: %d, Got: %zu\n",
+            heightmapWidth * heightmapHeight, heightData.size());
+        return;
+    }
+
+    // Apply blur if needed
+    if (heightmapSettings.useBlur && heightmapSettings.blurRadius > 0) {
+        std::printf("Applying blur with radius %d\n", heightmapSettings.blurRadius);
+        heightData = blurHeightmapData(heightData, heightmapWidth, heightmapHeight, heightmapSettings.blurRadius);
+    }
+
+    // Create the mesh
+    std::printf("Creating mesh...\n");
     heightmapMesh = dh::createHeightmapMesh(heightData, heightmapWidth, heightmapHeight, heightmapSettings.scale);
 
     // Load the texture for visualization
-    if (heightmapSettings.texture) {
-        glDeleteTextures(1, &heightmapSettings.texture);
-    }
+    std::printf("Loading texture...\n");
     heightmapSettings.texture = ew::loadTexture(currentHeightmapPath.c_str());
-}
 
+    if (heightmapSettings.texture == 0) {
+        std::printf("WARNING: Failed to load texture\n");
+    }
+
+    std::printf("Heightmap loaded successfully\n");
+}
 void drawUI() {
     ImGui_ImplGlfw_NewFrame();
     ImGui_ImplOpenGL3_NewFrame();
@@ -150,6 +222,17 @@ void drawUI() {
     ImGui::Checkbox("Wireframe", &heightmapSettings.wireframe);
     ImGui::Checkbox("Use Color Map", &heightmapSettings.useColorMap);
 
+    // Blur settings
+    ImGui::Separator();
+    ImGui::Text("Blur Settings");
+    bool blurChanged = false;
+    blurChanged |= ImGui::Checkbox("Use Blur", &heightmapSettings.useBlur);
+    blurChanged |= ImGui::SliderInt("Blur Radius", &heightmapSettings.blurRadius, 0, 10);
+
+    // Regenerate mesh if blur settings change
+    if (blurChanged) {
+        loadSelectedHeightmap();
+    }
     // Color mapping
     if (heightmapSettings.useColorMap) {
         ImGui::SliderFloat("Water Level", &heightmapSettings.waterLevel, 0.0f, 0.5f);
@@ -285,6 +368,8 @@ int main() {
         heightmapShader.setMat4("_Model", glm::mat4(1.0f)); // Identity matrix
         heightmapShader.setInt("_HeightmapTexture", 0);
 
+		heightmapShader.setVec3("_CameraPos", camera.position);
+
         // Lighting uniforms
         heightmapShader.setFloat("_AmbientStrength", heightmapSettings.ambientStrength);
         heightmapShader.setVec3("_LightDir", heightmapSettings.lightDir);
@@ -301,6 +386,10 @@ int main() {
         heightmapShader.setVec3("_LowlandColor", heightmapSettings.lowlandColor);
         heightmapShader.setVec3("_HighlandColor", heightmapSettings.highlandColor);
         heightmapShader.setVec3("_MountainColor", heightmapSettings.mountainColor);
+
+        // Blur uniforms
+        heightmapShader.setInt("_UseBlur", heightmapSettings.useBlur ? 1 : 0);
+        heightmapShader.setInt("_BlurRadius", heightmapSettings.blurRadius);
 
         // Bind the texture
         glActiveTexture(GL_TEXTURE0);
