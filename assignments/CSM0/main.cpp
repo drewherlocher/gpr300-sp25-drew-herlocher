@@ -469,7 +469,7 @@ std::vector<glm::mat4> calculateLightSpaceMatrices()
 		(
 			minX, maxX,
 			minY, maxY,
-			maxZ, minZ
+			-maxZ, -minZ
 		);
 
 		matrices[i] = lightProjection * lightView;
