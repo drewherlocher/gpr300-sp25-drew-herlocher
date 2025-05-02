@@ -34,14 +34,16 @@ void drawUI();
 void initCamera();
 void definePipeline();
 void initDetails();
+void initMonkeys();
 void calculateLightSpaceMatrices();
 std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
 void calculateCascadeSplits();
 void loadSelectedHeightmap();
 std::vector<float> blurHeightmapData(const std::vector<float>& data, int width, int height, int radius);
 
-void renderHeightmap(ew::Shader shader, float time);
-void shadowPass(ew::Shader shadowPass);
+void renderHeightmap(ew::Shader shader, ew::Model model, float time);
+void renderMonkeys(ew::Shader shader, float time, GLuint brickTexture, ew::Model monkeyModel); 
+void shadowPass(ew::Shader shadowPass, ew::Model monkeyModel);
 GLenum glCheckError_(const char* file, int line);
 
 #define glCheckError() glCheckError_(__FILE__, __LINE__) 
@@ -57,6 +59,7 @@ float deltaTime = 0.0f;
 // Camera and controllers
 ew::Camera camera;
 ew::CameraController cameraController;
+ew::Mesh plane;
 
 // Available heightmaps
 struct HeightmapFile 
@@ -119,8 +122,18 @@ struct Light
     glm::vec3 color = glm::vec3(1.0f, 1.0f, 0.9f);
     bool rotating = true;
     float rotationSpeed = 0.3f;
-    float intensity = 1.5f;
+    float intensity = 3.0f;
 } light;
+
+// Structure to store monkey data
+struct Monkey 
+{
+    glm::vec3 position;
+    float scale;
+};
+
+// Array of monkeys
+std::vector<Monkey> monkeys;
 
 struct Debug 
 {
@@ -211,6 +224,10 @@ int main()
     ew::Shader heightmapShader = ew::Shader("assets/Shaders/heightmap.vert", "assets/Shaders/heightmap.frag");
     ew::Shader shadowPassShader = ew::Shader("assets/Shaders/shadow_pass.vert", "assets/Shaders/shadow_pass.frag");
 
+    //model + texture
+    ew::Model monkeyModel = ew::Model("assets/Models/suzanne.obj");
+    GLuint brickTexture = ew::loadTexture("assets/Textures/brick_color.jpg");
+
     // Init camera and pipeline
     initCamera();
     definePipeline();
@@ -221,6 +238,9 @@ int main()
 
     // Load initial heightmap
     loadSelectedHeightmap();
+
+    // Init monkeys
+    initMonkeys();
 
     // Main loop
     while (!glfwWindowShouldClose(window)) 
@@ -234,11 +254,14 @@ int main()
         // Shadow pass (if enabled)
         if (debug.enable_shadows) 
         {
-            shadowPass(shadowPassShader);
+            shadowPass(shadowPassShader, monkeyModel);
         }
 
         // Render scene with heightmap
-        renderHeightmap(heightmapShader, time);
+        renderHeightmap(heightmapShader, monkeyModel, time);
+
+        // Render monkeys
+        renderMonkeys(heightmapShader, time, brickTexture, monkeyModel);
 
         // Camera movement
         cameraController.move(window, &camera, deltaTime);
@@ -267,9 +290,9 @@ int main()
 void resetCamera(ew::Camera* camera, ew::CameraController* controller) 
 {
     // Reset position
-    camera->position = glm::vec3(0, 50.0f, 100.0f);
+    camera->position = glm::vec3(0.0f, 50.0f, 5.0f);
     // Reset target
-    camera->target = glm::vec3(0);
+    camera->target = glm::vec3(0.0f, 0.0f, 0.0f);
 
     // Reset controller rotation
     controller->yaw = -90.0f;
@@ -278,7 +301,7 @@ void resetCamera(ew::Camera* camera, ew::CameraController* controller)
 
 void initCamera()
 {
-	camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+	camera.position = glm::vec3(0.0f, 50.0f, 5.0f);
 	camera.target = glm::vec3(0.0f, 0.0f, 0.0f);	//look at center of scene
 	camera.aspectRatio = (float)screenWidth / screenHeight;
 	camera.fov = 60.0f;
@@ -286,9 +309,10 @@ void initCamera()
 
 void initDetails()
 {
-	light.position = glm::vec3(1.0f);
+    plane.load(ew::createPlane(50.0f, 50.0f, 100));
+	light.position = glm::vec3(0.0f, 50.0f, 5.0f);
 	light.color = glm::vec3(0.5f, 0.5f, 0.5f);
-	light.rotating = true;
+	light.rotating = false;
 }
 
 void definePipeline() 
@@ -298,6 +322,36 @@ void definePipeline()
     glCullFace(GL_BACK);
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.2f, 0.3f, 0.4f, 1.0f);
+}
+
+void initMonkeys() 
+{
+    // Clear any existing monkeys
+    monkeys.clear();
+
+    // Create 4 monkeys at random positions
+    for (int i = 0; i < 4; i++) 
+    {
+        Monkey monkey;
+
+        // Random X position within the heightmap width
+        float randomX = (float)(rand() % heightmapWidth) / heightmapWidth;
+        randomX = randomX * heightmapSettings.scale.x - (heightmapSettings.scale.x / 2.0f);
+
+        // Random Z position within the heightmap height
+        float randomZ = (float)(rand() % heightmapHeight) / heightmapHeight;
+        randomZ = randomZ * heightmapSettings.scale.z - (heightmapSettings.scale.z / 2.0f);
+
+        // Y position at the top of the heightmap (with a slight offset to avoid clipping)
+        float randomY = 15.0f;//heightmapSettings.scale.y;
+
+        monkey.position = glm::vec3(randomX, randomY, randomZ);
+
+        // Random scale between 0.5 and 2.0
+        monkey.scale = 0.5f + ((float)rand() / RAND_MAX) * 1.5f;
+
+        monkeys.push_back(monkey);
+    }
 }
 
 std::vector<float> blurHeightmapData(const std::vector<float>& data, int width, int height, int radius) 
@@ -407,7 +461,7 @@ void loadSelectedHeightmap()
     std::printf("Heightmap loaded successfully\n");
 }
 
-void renderHeightmap(ew::Shader shader, float time) 
+void renderHeightmap(ew::Shader shader, ew::Model model, float time) 
 {
     // Update light position if rotating
     if (light.rotating)
@@ -515,11 +569,92 @@ void renderHeightmap(ew::Shader shader, float time)
     shader.setVec3("_HighlandColor", heightmapSettings.highlandColor);
     shader.setVec3("_MountainColor", heightmapSettings.mountainColor);
 
+    model.draw();
+    shader.setMat4("_Model", glm::translate(glm::vec3(0.0f, -2.0f, 0.0f)));
+
+    //plane.draw();
     // Draw the heightmap mesh
     heightmapMesh.draw();
 }
 
-void shadowPass(ew::Shader shadowPass) {
+void renderMonkeys(ew::Shader shader, float time, GLuint brickTexture, ew::Model monkeyModel)
+{
+    shader.use();
+
+    // Bind the texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, brickTexture);
+
+    // Set texture uniform
+    shader.setInt("_HeightmapTexture", 0);
+
+    // Add shadow-related uniforms here
+    if (debug.enable_shadows)
+    {
+        // Bind shadow map texture
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, depthBuffer.depthTexture);
+
+        shader.setInt("shadow_map", 1);
+
+        shader.setInt("enable_shadows", 1);
+        shader.setInt("cascade_count", debug.num_cascades);
+
+        for (int i = 0; i < debug.num_cascades; i++)
+        {
+            // Array of light view projection matrices
+            shader.setMat4("_LightViewProjection[" + std::to_string(i) + "]", depthBuffer.lightViewProj[i]);
+            // Cascade splits
+            shader.setFloat("cascade_splits[" + std::to_string(i) + "]", depthBuffer.cascadeSplits[i]);
+        }
+
+        // Visualization flag
+        shader.setInt("visualize_cascades", debug.visualize_cascades ? 1 : 0);
+        shader.setFloat("far_clip_plane", viewFrustum.farPlane);
+
+        // For shadowing
+        shader.setFloat("bias", debug.bias);
+        shader.setFloat("minBias", debug.min_bias);
+        shader.setFloat("maxBias", debug.max_bias);
+        shader.setInt("use_pcf", debug.use_pcf);
+    }
+    else
+    {
+        shader.setInt("enable_shadows", 0);
+    }
+
+    // Draw each monkey
+    for (const auto& monkey : monkeys)
+    {
+        // Create model matrix for each monkey
+        glm::mat4 modelMatrix = glm::mat4(1.0f);
+
+        // Position the monkey
+        modelMatrix = glm::translate(modelMatrix, monkey.position);
+
+        // Scale the monkey
+        modelMatrix = glm::scale(modelMatrix, glm::vec3(monkey.scale));
+
+        // Set the model matrix
+        shader.setMat4("_Model", modelMatrix);
+
+        // Set other shader uniforms same as heightmap
+        shader.setMat4("_ViewProjection", camera.projectionMatrix() * camera.viewMatrix());
+        shader.setVec3("_CameraPos", camera.position);
+        shader.setVec3("_LightDir", -glm::normalize(light.position));
+        shader.setVec3("_LightColor", light.color * light.intensity);
+        shader.setVec3("_LightPos", light.position);
+        shader.setFloat("_AmbientStrength", heightmapSettings.ambientStrength);
+        shader.setFloat("_SpecularStrength", heightmapSettings.specularStrength);
+        shader.setFloat("_Shininess", heightmapSettings.shininess);
+
+        // Draw the monkey model
+        monkeyModel.draw();
+    }
+}
+
+void shadowPass(ew::Shader shadowPass, ew::Model monkeyModel) 
+{
     // Calculate all light view-projection matrices for cascades
     calculateLightSpaceMatrices();
 
@@ -567,9 +702,19 @@ void shadowPass(ew::Shader shadowPass) {
         shadowPass.setMat4("_Model", glm::mat4(1.0f));
         shadowPass.setMat4("_LightViewProjection", depthBuffer.lightViewProj[cascade]);
 
-        // Draw heightmap mesh
-        heightmapMesh.draw();
+        // Draw monkeys in shadow pass
+        for (const auto& monkey : monkeys) 
+        {
+            glm::mat4 modelMatrix = glm::mat4(1.0f);
+            modelMatrix = glm::translate(modelMatrix, monkey.position);
+            modelMatrix = glm::scale(modelMatrix, glm::vec3(monkey.scale));
 
+            shadowPass.setMat4("_Model", modelMatrix);
+            shadowPass.setMat4("_LightViewProjection", depthBuffer.lightViewProj[cascade]);
+
+            monkeyModel.draw();
+        }
+//        plane.draw();
         // After rendering copy the depth data to visualization texture for IMGUI
         glBindTexture(GL_TEXTURE_2D, depthBuffer.cascadeVisualizationTextures[cascade]);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, depthBuffer.width, depthBuffer.height);
@@ -648,7 +793,7 @@ void calculateLightSpaceMatrices()
         }
 
         // Padding to bound
-        float radius = 20.0f;
+        float radius = 50.0f;
         minX -= radius;
         maxX += radius;
         minY -= radius;
@@ -870,21 +1015,38 @@ void drawUI()
 
     // Cascade settings
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Shadow Settings", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ImGui::CollapsingHeader("Cascade Settings", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::Checkbox("Enable Shadows", &debug.enable_shadows);
         ImGui::Checkbox("Show Cascade Colors", &debug.visualize_cascades);
-        ImGui::SliderInt("Number of Cascades", &debug.num_cascades, 1, MAX_CASCADES);
-        ImGui::SliderFloat("Shadow Bias", &debug.bias, 0.001f, 0.05f, "%.4f");
         ImGui::Checkbox("Use PCF Filtering", &debug.use_pcf);
+
+        //control for number of cascades
+        int prevCascades = debug.num_cascades;
+        ImGui::SliderInt("Number of Cascades", &debug.num_cascades, 1, MAX_CASCADES);
+
+        if (prevCascades != debug.num_cascades)
+        {
+            //recalc cascade splits
+            calculateCascadeSplits();
+        }
+
+        //depth image
+        ImGui::Separator();
+        for (int i = 0; i < debug.num_cascades; i++)
+        {
+            ImGui::Text("Cascade %d:", i);
+            ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[i], ImVec2(256, 256));
+        }
     }
 
     // Lighting settings
     ImGui::Separator();
+
     if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) // Open by default
     {
         ImGui::ColorEdit3("Light Color", &light.color[0]);
-        ImGui::SliderFloat("Light Intensity", &light.intensity, 0.5f, 3.0f);
+        ImGui::SliderFloat("Light Intensity", &light.intensity, 0.1f, 10.0f);
         ImGui::Checkbox("Rotating Light", &light.rotating);
 
         if (light.rotating) {
@@ -892,7 +1054,7 @@ void drawUI()
         }
         else {
             ImGui::SliderFloat("Light X", &light.position.x, -200.0f, 200.0f);
-            ImGui::SliderFloat("Light Y", &light.position.y, 50.0f, 300.0f);
+            ImGui::SliderFloat("Light Y", &light.position.y, -200.0f, 300.0f);
             ImGui::SliderFloat("Light Z", &light.position.z, -200.0f, 200.0f);
         }
 
