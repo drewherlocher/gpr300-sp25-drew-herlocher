@@ -113,11 +113,13 @@ struct Material
     float shininess = 128;
 } material;
 
-struct Light 
+struct Light
 {
-    glm::vec3 color = glm::vec3(0.5f, 0.5f, 0.5f);
-    glm::vec3 position = glm::vec3(1.0f);
+    glm::vec3 position = glm::vec3(100.0f, 150.0f, 100.0f); 
+    glm::vec3 color = glm::vec3(1.0f, 1.0f, 0.9f);
     bool rotating = true;
+    float rotationSpeed = 0.3f;
+    float intensity = 1.5f;
 } light;
 
 struct Debug 
@@ -408,10 +410,15 @@ void loadSelectedHeightmap()
 void renderHeightmap(ew::Shader shader, float time) 
 {
     // Update light position if rotating
-    if (light.rotating) 
+    if (light.rotating)
     {
-        const auto rotationMatrix = glm::rotate(time * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
-        light.position = rotationMatrix * glm::vec4(100.0f, 100.0f, 100.0f, 1.0f);
+        // Rotate around the scene, maintaining height
+        const auto rotationMatrix = glm::rotate(time * light.rotationSpeed, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::vec3 initialPosition = glm::vec3(100.0f, 150.0f, 100.0f);
+        light.position = glm::vec3(rotationMatrix * glm::vec4(initialPosition, 1.0f));
+
+        // Update directional light vector for shadows
+        heightmapSettings.lightDir = glm::normalize(glm::vec3(0.0f) - light.position);
     }
 
     const auto camera_view_proj = camera.projectionMatrix() * camera.viewMatrix();
@@ -494,7 +501,7 @@ void renderHeightmap(ew::Shader shader, float time)
 
     // Lighting
     shader.setVec3("_LightDir", -glm::normalize(light.position));
-    shader.setVec3("_LightColor", light.color);
+    shader.setVec3("_LightColor", light.color * light.intensity);
     shader.setVec3("_LightPos", light.position);
     shader.setFloat("_AmbientStrength", heightmapSettings.ambientStrength);
     shader.setFloat("_SpecularStrength", heightmapSettings.specularStrength);
@@ -863,58 +870,37 @@ void drawUI()
 
     // Cascade settings
     ImGui::Separator();
-
-    if (ImGui::CollapsingHeader("Cascade Settings")) 
+    if (ImGui::CollapsingHeader("Shadow Settings", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::Checkbox("Enable Shadows", &debug.enable_shadows);
         ImGui::Checkbox("Show Cascade Colors", &debug.visualize_cascades);
-        //control for number of cascades
-        int prevCascades = debug.num_cascades;
         ImGui::SliderInt("Number of Cascades", &debug.num_cascades, 1, MAX_CASCADES);
-
-        if (prevCascades != debug.num_cascades) 
-        {
-            //recalc cascade splits
-            calculateCascadeSplits();
-        }
-
-        //depth image
-        ImGui::Separator();
-        for (int i = 0; i < debug.num_cascades; i++) 
-        {
-            ImGui::Text("Cascade %d:", i);
-            ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[i], ImVec2(256, 256));
-        }
+        ImGui::SliderFloat("Shadow Bias", &debug.bias, 0.001f, 0.05f, "%.4f");
+        ImGui::Checkbox("Use PCF Filtering", &debug.use_pcf);
     }
 
     // Lighting settings
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Lighting")) 
+    if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) // Open by default
     {
         ImGui::ColorEdit3("Light Color", &light.color[0]);
-        ImGui::Checkbox("Light Rotation?", &light.rotating);
-        ImGui::SliderFloat("X Position", &light.position.x, -5, 5);
-        ImGui::SliderFloat("Y Position", &light.position.y, -5, 5);
-        ImGui::SliderFloat("Z Position", &light.position.z, -5, 5);
+        ImGui::SliderFloat("Light Intensity", &light.intensity, 0.5f, 3.0f);
+        ImGui::Checkbox("Rotating Light", &light.rotating);
 
-        // Directional light settings from heightmap
-        ImGui::Separator();
-        ImGui::Text("Directional Light");
-        ImGui::ColorEdit3("Direction Light Color", &heightmapSettings.lightColor.x);
+        if (light.rotating) {
+            ImGui::SliderFloat("Rotation Speed", &light.rotationSpeed, 0.1f, 1.0f);
+        }
+        else {
+            ImGui::SliderFloat("Light X", &light.position.x, -200.0f, 200.0f);
+            ImGui::SliderFloat("Light Y", &light.position.y, 50.0f, 300.0f);
+            ImGui::SliderFloat("Light Z", &light.position.z, -200.0f, 200.0f);
+        }
 
-        float lightDirAngles[2] = 
-        {
-            atan2(heightmapSettings.lightDir.x, heightmapSettings.lightDir.z) * 180.0f / M_PI,
-            asin(-heightmapSettings.lightDir.y) * 180.0f / M_PI
-        };
-
-        if (ImGui::SliderFloat2("Light Direction", lightDirAngles, -180.0f, 180.0f)) 
-        {
-            float horz = lightDirAngles[0] * M_PI / 180.0f;
-            float vert = lightDirAngles[1] * M_PI / 180.0f;
-            heightmapSettings.lightDir.x = cos(vert) * sin(horz);
-            heightmapSettings.lightDir.y = -sin(vert);
-            heightmapSettings.lightDir.z = cos(vert) * cos(horz);
-            heightmapSettings.lightDir = glm::normalize(heightmapSettings.lightDir);
+        // Add a preset for optimal shadow viewing
+        if (ImGui::Button("Optimal Shadow Position")) {
+            light.position = glm::vec3(100.0f, 150.0f, 100.0f);
+            light.intensity = 1.5f;
+            heightmapSettings.lightDir = glm::normalize(glm::vec3(0.0f) - light.position);
         }
     }
 
