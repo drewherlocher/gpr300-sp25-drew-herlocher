@@ -584,10 +584,6 @@ void drawUI() {
 	{
 		ImGui::Checkbox("Show Cascade Colors", &debug.visualize_cascades);
 
-		//ImGui::Text("Cascade Splits:");
-		//ImGui::SliderFloat("Split 1", &depthBuffer.cascadeSplits[0], 0.05f, 0.3f);
-		//ImGui::SliderFloat("Split 2", &depthBuffer.cascadeSplits[1], 0.3f, 0.7f);
-
 		ImGui::Separator(); //depth image
 		ImGui::Text("Cascade 0:");
 		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[0], ImVec2(256, 256));
