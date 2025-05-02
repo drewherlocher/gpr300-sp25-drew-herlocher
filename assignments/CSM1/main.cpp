@@ -31,7 +31,7 @@ void definePipline();
 void initDetails();
 void calculateLightSpaceMatrices();
 std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
-void calculateCascadeSplits(float nearPlane, float farPlane);
+void calculateCascadeSplits();
 
 void render(ew::Shader shader, ew::Model model, GLuint texture, float time);
 void shadowPass(ew::Shader shadowPass, ew::Model model);
@@ -55,13 +55,13 @@ GLenum glCheckError_(const char* file, int line)
 }
 #define glCheckError() glCheckError_(__FILE__, __LINE__) 
 
-// Global state
+//global state
 int screenWidth = 2160;
 int screenHeight = 1440;
 float prevFrameTime;
 float deltaTime;
 
-// Add these definitions
+//cascade info definitions
 #define MAX_CASCADES 3
 #define NUM_CASCADES 3
 
@@ -94,8 +94,15 @@ struct Debug
 	float min_bias = 0.005;
 	bool cull_front = true;
 	bool use_pcf = true;
-	bool visualize_cascades = true; // New flag to toggle cascade visualization
+	bool visualize_cascades = true;
 }debug;
+
+struct ViewFrustumSettings
+{
+	float nearPlane = 0.1f;
+	float farPlane = 100.0f;
+	float lambda = 0.5f;
+}viewFrustum;
 
 struct DepthBuffer
 {
@@ -105,11 +112,11 @@ struct DepthBuffer
 	float width;
 	float height;
 
-	// Cascade-specific data
-	float cascadeSplits[MAX_CASCADES];  // Normalized distances for cascade splits
-	glm::mat4 lightViewProj[MAX_CASCADES]; // View-projection matrix for each cascade
+	//cascade specific data
+	float cascadeSplits[MAX_CASCADES];		// distances for cascade splits
+	glm::mat4 lightViewProj[MAX_CASCADES];  // view-projection matrix for each cascade
 
-	// Add these for visualization
+	//used for the IMGUI visiualization and nothing else
 	GLuint cascadeVisualizationTextures[MAX_CASCADES];
 
 	void Initialize(float dWidth, float dHeight)
@@ -117,22 +124,12 @@ struct DepthBuffer
 		width = dWidth;
 		height = dHeight;
 
-		// Create depth texture array
+		//create depth texture array
 		glGenTextures(1, &depthTexture);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, depthTexture);
-		glTexImage3D(
-			GL_TEXTURE_2D_ARRAY,
-			0,
-			GL_DEPTH_COMPONENT32F,
-			dWidth,
-			dHeight,
-			MAX_CASCADES,
-			0,
-			GL_DEPTH_COMPONENT,
-			GL_FLOAT,
-			nullptr);
+		glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT32F, dWidth, dHeight, MAX_CASCADES, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
 
-		// Set texture parameters
+		//texture parameters
 		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
@@ -140,15 +137,15 @@ struct DepthBuffer
 		float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
 		glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, borderColor);
 
-		// Create framebuffer
+		//gen framebuffer
 		glGenFramebuffers(1, &fbo);
 
-		// Setup default cascade splits (can be adjusted later)
-		cascadeSplits[0] = 0.05f;  // First cascade covers very close objects (5%)
-		cascadeSplits[1] = 0.25f;  // Second cascade extends to medium distance (25%)
-		cascadeSplits[2] = 1.0f;   // Third cascade covers the rest
+		//default cascade splits
+		cascadeSplits[0] = 0.05f;  // first cascade (5%)
+		cascadeSplits[1] = 0.25f;  // second cascade (25%)
+		cascadeSplits[2] = 1.0f;   // third cascade covers the rest
 
-       // Create separate textures for visualization
+       //seperate textures for IMGUI showing
        glGenTextures(MAX_CASCADES, cascadeVisualizationTextures);
        for (int i = 0; i < MAX_CASCADES; i++) 
 	   {
@@ -160,6 +157,8 @@ struct DepthBuffer
            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
            glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
        }
+
+	   //no frame buffer check as config happens dynamically during rendering
 	}
 } depthBuffer;
 
@@ -200,6 +199,7 @@ int main()
 
 		glfwSwapBuffers(window);
 	}
+
 	printf("Shutting down...");
 }
 
@@ -262,18 +262,23 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	shader.setMat4("_Model", glm::mat4(1.0f));
 	shader.setMat4("_CameraViewProjection", camera_view_proj);
 
-	// Pass cascade-specific data
+	//cascade-specific data
 	shader.setInt("cascade_count", NUM_CASCADES);
-	for (int i = 0; i < NUM_CASCADES; i++) {
-		// Pass array of light view projection matrices
+
+	for (int i = 0; i < NUM_CASCADES; i++) 
+	{
+		//array of light view projection matrices
 		shader.setMat4("_LightViewProjection[" + std::to_string(i) + "]", depthBuffer.lightViewProj[i]);
-		// Pass cascade splits
+
+		//cascade splits
 		shader.setFloat("cascade_splits[" + std::to_string(i) + "]", depthBuffer.cascadeSplits[i]);
 	}
 
-	// Pass visualization flag
+	//visualization flag
 	shader.setInt("visualize_cascades", debug.visualize_cascades ? 1 : 0);
+	shader.setFloat("far_clip_plane", viewFrustum.farPlane);
 
+	//camera
 	shader.setVec3("camera_pos", camera.position);
 
 	//material properties
@@ -301,107 +306,101 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 
 void shadowPass(ew::Shader shadowPass, ew::Model model)
 {
-	// Calculate all light view-projection matrices for cascades
-	// This is called every frame, so splits will update as camera moves
+	//calc all light view-projection matrices for cascades
+	//called every frame so splits will update as camera moves
 	calculateLightSpaceMatrices();
 
-	// Enable depth testing
+	//enable depth testing
 	glEnable(GL_DEPTH_TEST);
 
-	// Set up face culling if needed
-	if (debug.cull_front) {
+	//cull facing if needed
+	if (debug.cull_front) 
+	{
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_FRONT);
 	}
-	else {
+	else 
+	{
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_BACK);
 	}
 
-	// Render depth for each cascade
+	//render depth for each cascade
 	for (unsigned int cascade = 0; cascade < NUM_CASCADES; cascade++)
 	{
-		// Bind the framebuffer for this cascade
+		//bind framebuffer for this cascade
 		glBindFramebuffer(GL_FRAMEBUFFER, depthBuffer.fbo);
 
-		// Attach the appropriate layer of depth texture array to the framebuffer's depth attachment
-		glFramebufferTextureLayer(
-			GL_FRAMEBUFFER,
-			GL_DEPTH_ATTACHMENT,
-			depthBuffer.depthTexture,
-			0,  // mip level
-			cascade
-		);
+		//attach layer of depth texture array to this framebuffer depth attachment
+		glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, depthBuffer.depthTexture, 0, cascade);
 
-		// Disable draw buffer since we're only writing to depth
+		//disable draw buffer
 		glDrawBuffer(GL_NONE);
 		glReadBuffer(GL_NONE);
 
-		// Check framebuffer status
+		//check framebuffer status
 		GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-		if (status != GL_FRAMEBUFFER_COMPLETE) {
+		if (status != GL_FRAMEBUFFER_COMPLETE) 
+		{
 			printf("Framebuffer incomplete: %d (cascade %d)\n", status, cascade);
 		}
 
-		// Clear the depth buffer
+		//clear depth buffer
 		glViewport(0, 0, depthBuffer.width, depthBuffer.height);
 		glClear(GL_DEPTH_BUFFER_BIT);
 
-		// Use shadow shader
+		//use shadow shader
 		shadowPass.use();
 		shadowPass.setMat4("_Model", glm::mat4(1.0f));
 		shadowPass.setMat4("_LightViewProjection", depthBuffer.lightViewProj[cascade]);
 
-		// Draw the model
 		model.draw();
 
-		// Draw the plane too
 		shadowPass.setMat4("_Model", glm::translate(glm::vec3(0.0f, -2.0f, 0.0f)));
 		plane.draw();
 
-	    // After rendering this cascade, copy the depth data to visualization texture
+	    //after rendering copy the depth data to visualization texture for IMGUI
         glBindTexture(GL_TEXTURE_2D, depthBuffer.cascadeVisualizationTextures[cascade]);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, depthBuffer.width, depthBuffer.height);
 	}
 
-	// Reset to default framebuffer
+	//reset framebuffer
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-	// Reset face culling
+	//reset face culling
 	glCullFace(GL_BACK);
 }
 
 void calculateLightSpaceMatrices()
 {
-	const float nearClip = 0.1f;
-	const float farClip = 100.0f;
-	calculateCascadeSplits(nearClip, farClip);
+	calculateCascadeSplits();
 
 	float lastSplitDist = 0.0f;
 
-	// Calculate split distances in world-space units
+	//calc cascade split distances
 	for (int i = 0; i < NUM_CASCADES; i++)
 	{
 		float splitDist = depthBuffer.cascadeSplits[i];
 
-		// Get frustum corners for this cascade segment
+		//frustum corners for this cascade
 		glm::mat4 projectionMatrix = camera.projectionMatrix();
 		glm::mat4 viewMatrix = camera.viewMatrix();
 
-		// Create cascade projection matrix with custom near/far planes
-		float cascadeNear = lastSplitDist * (farClip - nearClip);
-		float cascadeFar = splitDist * (farClip - nearClip);
+		//cascade projection matrix with custom near/far planes
+		float cascadeNear = lastSplitDist * (viewFrustum.farPlane - viewFrustum.nearPlane);
+		float cascadeFar = splitDist * (viewFrustum.farPlane - viewFrustum.nearPlane);
 
-		glm::mat4 cascadeProj = glm::perspective(
+		glm::mat4 cascadeProj = glm::perspective
+		(
 			glm::radians(camera.fov),
 			camera.aspectRatio,
-			nearClip + cascadeNear,
-			nearClip + cascadeFar
+			viewFrustum.nearPlane + cascadeNear,
+			viewFrustum.nearPlane + cascadeFar
 		);
 
 		std::vector<glm::vec4> frustumCorners = getFrustumCornersWorldSpace(cascadeProj, viewMatrix);
 
-		// Calculate the center of frustum corners
+		//center of frustum corners
 		glm::vec3 center = glm::vec3(0.0f);
 		for (const auto& corner : frustumCorners)
 		{
@@ -412,14 +411,15 @@ void calculateLightSpaceMatrices()
 		// tried using light direction but it did not work :(
 		// glm::vec3 lightDir = glm::normalize(glm::vec3(light.position - center));
 
-		// Calculate light view matrix looking at frustum center
-		const glm::mat4 lightView = glm::lookAt(
+		//light view matrix looking at frustum center
+		const glm::mat4 lightView = glm::lookAt
+		(
 			center + light.position,
 			center,
 			glm::vec3(0.0f, 1.0f, 0.0f)
 		);
 
-		// Calculate orthographic projection bounds to fit frustum slice
+		//orthographic projection bounds to fit frustum
 		float minX = std::numeric_limits<float>::max();
 		float maxX = std::numeric_limits<float>::lowest();
 		float minY = std::numeric_limits<float>::max();
@@ -427,7 +427,7 @@ void calculateLightSpaceMatrices()
 		float minZ = std::numeric_limits<float>::max();
 		float maxZ = std::numeric_limits<float>::lowest();
 
-		// Transform corners to light space and calculate bounds
+		//transform corners to light space and calc bounds
 		for (const auto& corner : frustumCorners)
 		{
 			const glm::vec4 lightSpaceCorner = lightView * corner;
@@ -439,41 +439,46 @@ void calculateLightSpaceMatrices()
 			maxZ = std::max(maxZ, lightSpaceCorner.z);
 		}
 
-		// Add padding to bound
+		//padding to bound
 		float radius = 5.0f;
 		minX -= radius;
 		maxX += radius;
 		minY -= radius;
 		maxY += radius;
 
-		// Create orthographic projection matrix for this cascade
-		const glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ - 100.0f, maxZ + 100.0f); //why are the 100s here
+		//orthographic projection matrix
+		const glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ - 100.0f, maxZ + 100.0f);	//why are the 100s here
 
-		// Calculate and store the final light view-projection matrix for this cascade
+		//final light view-projection matrix for this cascade
 		depthBuffer.lightViewProj[i] = lightProj * lightView;
 
 		lastSplitDist = splitDist;
 	}
 }
 
-// Add this function to calculate frustum corners in world space
 std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view)
 {
+	//all 8 corners of frustum
 	std::vector<glm::vec4> frustumCorners(8);
 	const glm::mat4 inv = glm::inverse(proj * view);
 
-	// Near and far planes for NDC coordinates
-	for (unsigned int x = 0; x < 2; ++x)
+	//4 corners on near plane
+	//4 corners on far plane
+	for (unsigned int x = 0; x < 2; ++x)			// left or right side
 	{
-		for (unsigned int y = 0; y < 2; ++y)
+		for (unsigned int y = 0; y < 2; ++y)		//bottom or top side
 		{
-			for (unsigned int z = 0; z < 2; ++z)
+			for (unsigned int z = 0; z < 2; ++z)	//near side or far side
 			{
-				const glm::vec4 pt = inv * glm::vec4(
+				//represent standard clip cube coords
+				const glm::vec4 pt = inv * glm::vec4
+				(
 					2.0f * x - 1.0f,
 					2.0f * y - 1.0f,
 					2.0f * z - 1.0f,
 					1.0f);
+				
+				//get actual world pos
 				frustumCorners[x * 4 + y * 2 + z] = pt / pt.w;
 			}
 		}
@@ -482,19 +487,27 @@ std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const 
 	return frustumCorners;
 }
 
-// Add this function to calculate the cascade splits using a practical split scheme
-void calculateCascadeSplits(float nearPlane, float farPlane)
+void calculateCascadeSplits()
 {
-	float lambda = 0.5f;
-	float ratio = farPlane / nearPlane;
+	//calculate ratio between far and near plane
+	float ratio = viewFrustum.farPlane / viewFrustum.nearPlane;
 
 	for (int i = 0; i < NUM_CASCADES; i++)
 	{
+		//normalized pos for this cascade
 		float p = (i + 1) / static_cast<float>(NUM_CASCADES);
-		float log = nearPlane * std::pow(ratio, p);
-		float uniform = nearPlane + (farPlane - nearPlane) * p;
-		float d = lambda * (log - uniform) + uniform;
-		depthBuffer.cascadeSplits[i] = (d - nearPlane) / (farPlane - nearPlane);
+
+		//split calculation (for better precision)
+		float log = viewFrustum.nearPlane * std::pow(ratio, p);
+
+		//uniform split
+		float uniform = viewFrustum.nearPlane + (viewFrustum.farPlane - viewFrustum.nearPlane) * p;
+
+		//blend between logarithimic + uniform using lambda
+		float d = viewFrustum.lambda * (log - uniform) + uniform;
+
+		//normalize so 0 = near plane and 1 = far plane
+		depthBuffer.cascadeSplits[i] = (d - viewFrustum.nearPlane) / (viewFrustum.farPlane - viewFrustum.nearPlane);
 	}
 }
 
@@ -526,7 +539,38 @@ void drawUI() {
 		ImGui::SliderFloat3("Specular K", (float*)&material.specular, 0.0f, 1.0f);
 		ImGui::SliderFloat("Shininess", &material.shininess, 2.0f, 1024.0f);
 	}
-	ImGui::Separator();
+	ImGui::Separator();	
+	if (ImGui::CollapsingHeader("View Frustrum Settings"))
+	{
+		//store to detect changes
+		float prevNear = viewFrustum.nearPlane;
+		float prevFar = viewFrustum.farPlane;
+		float prevLambda = viewFrustum.lambda;
+
+		//near plane
+		ImGui::SliderFloat("Near Plane", &viewFrustum.nearPlane, 0.01f, 10.0f, "%.2f");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##Near")) viewFrustum.nearPlane = 0.1f;
+
+		//far plane
+		ImGui::SliderFloat("Far Plane", &viewFrustum.farPlane, 10.0f, 1000.0f, "%.1f");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##Far")) viewFrustum.farPlane = 100.0f;
+
+		//lambda
+		ImGui::SliderFloat("Lambda", &viewFrustum.lambda, 0.0f, 1.0f, "%.2f");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##Lambda")) viewFrustum.lambda = 0.75f;
+
+		//recalc cascade splits if any values changed
+		if (prevNear != viewFrustum.nearPlane ||
+			prevFar != viewFrustum.farPlane ||
+			prevLambda != viewFrustum.lambda)
+		{
+			calculateCascadeSplits();
+		}
+	}
+	ImGui::Separator();	
 	if (ImGui::CollapsingHeader("Shadow Pass"))
 	{
 		ImGui::SliderFloat("Bias", &debug.bias, 0.0f, 0.1f);
@@ -534,11 +578,15 @@ void drawUI() {
 		ImGui::SliderFloat("Max Bias", &debug.max_bias, 0.0f, 0.1f);
 		ImGui::Checkbox("Culling Front", &debug.cull_front);
 		ImGui::Checkbox("Using PCF", &debug.use_pcf);
-		ImGui::Checkbox("Visualize Cascades", &debug.visualize_cascades);
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Cascade Settings"))
+	{
+		ImGui::Checkbox("Show Cascade Colors", &debug.visualize_cascades);
 
-		ImGui::Text("Cascade Splits:");
-		ImGui::SliderFloat("Split 1", &depthBuffer.cascadeSplits[0], 0.05f, 0.3f);
-		ImGui::SliderFloat("Split 2", &depthBuffer.cascadeSplits[1], 0.3f, 0.7f);
+		//ImGui::Text("Cascade Splits:");
+		//ImGui::SliderFloat("Split 1", &depthBuffer.cascadeSplits[0], 0.05f, 0.3f);
+		//ImGui::SliderFloat("Split 2", &depthBuffer.cascadeSplits[1], 0.3f, 0.7f);
 
 		ImGui::Separator(); //depth image
 		ImGui::Text("Cascade 0:");
