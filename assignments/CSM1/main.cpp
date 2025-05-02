@@ -62,8 +62,7 @@ float prevFrameTime;
 float deltaTime;
 
 //cascade info definitions
-#define MAX_CASCADES 3
-#define NUM_CASCADES 3
+#define MAX_CASCADES 8
 
 ew::Camera camera;	//our camera
 ew::CameraController cameraController;
@@ -95,6 +94,7 @@ struct Debug
 	bool cull_front = true;
 	bool use_pcf = true;
 	bool visualize_cascades = true;
+	int num_cascades = 3;
 }debug;
 
 struct ViewFrustumSettings
@@ -140,10 +140,17 @@ struct DepthBuffer
 		//gen framebuffer
 		glGenFramebuffers(1, &fbo);
 
+		//init cascade splits values
+		for (int i = 0; i < MAX_CASCADES; i++) 
+		{
+			//spread evenly between 0 and 1
+			cascadeSplits[i] = (i + 1.0f) / MAX_CASCADES;
+		}
+
 		//default cascade splits
-		cascadeSplits[0] = 0.05f;  // first cascade (5%)
-		cascadeSplits[1] = 0.25f;  // second cascade (25%)
-		cascadeSplits[2] = 1.0f;   // third cascade covers the rest
+		//cascadeSplits[0] = 0.05f;  // first cascade (5%)
+		//cascadeSplits[1] = 0.25f;  // second cascade (25%)
+		//cascadeSplits[2] = 1.0f;   // third cascade covers the rest
 
        //seperate textures for IMGUI showing
        glGenTextures(MAX_CASCADES, cascadeVisualizationTextures);
@@ -263,9 +270,9 @@ void render(ew::Shader shader, ew::Model model, GLuint texture, float time)
 	shader.setMat4("_CameraViewProjection", camera_view_proj);
 
 	//cascade-specific data
-	shader.setInt("cascade_count", NUM_CASCADES);
+	shader.setInt("cascade_count", debug.num_cascades);
 
-	for (int i = 0; i < NUM_CASCADES; i++) 
+	for (int i = 0; i < debug.num_cascades; i++) 
 	{
 		//array of light view projection matrices
 		shader.setMat4("_LightViewProjection[" + std::to_string(i) + "]", depthBuffer.lightViewProj[i]);
@@ -326,7 +333,7 @@ void shadowPass(ew::Shader shadowPass, ew::Model model)
 	}
 
 	//render depth for each cascade
-	for (unsigned int cascade = 0; cascade < NUM_CASCADES; cascade++)
+	for (unsigned int cascade = 0; cascade < debug.num_cascades; cascade++)
 	{
 		//bind framebuffer for this cascade
 		glBindFramebuffer(GL_FRAMEBUFFER, depthBuffer.fbo);
@@ -378,7 +385,7 @@ void calculateLightSpaceMatrices()
 	float lastSplitDist = 0.0f;
 
 	//calc cascade split distances
-	for (int i = 0; i < NUM_CASCADES; i++)
+	for (int i = 0; i < debug.num_cascades; i++)
 	{
 		float splitDist = depthBuffer.cascadeSplits[i];
 
@@ -492,10 +499,10 @@ void calculateCascadeSplits()
 	//calculate ratio between far and near plane
 	float ratio = viewFrustum.farPlane / viewFrustum.nearPlane;
 
-	for (int i = 0; i < NUM_CASCADES; i++)
+	for (int i = 0; i < debug.num_cascades; i++)
 	{
 		//normalized pos for this cascade
-		float p = (i + 1) / static_cast<float>(NUM_CASCADES);
+		float p = (i + 1) / static_cast<float>(debug.num_cascades);
 
 		//split calculation (for better precision)
 		float log = viewFrustum.nearPlane * std::pow(ratio, p);
@@ -584,15 +591,23 @@ void drawUI() {
 	{
 		ImGui::Checkbox("Show Cascade Colors", &debug.visualize_cascades);
 
-		ImGui::Separator(); //depth image
-		ImGui::Text("Cascade 0:");
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[0], ImVec2(256, 256));
+		//control for number of cascades
+		int prevCascades = debug.num_cascades;
+		ImGui::SliderInt("Number of Cascades", &debug.num_cascades, 1, MAX_CASCADES);
 
-		ImGui::Text("Cascade 1:");
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[1], ImVec2(256, 256));
+		if (prevCascades != debug.num_cascades) 
+		{
+			//recalc cascade splits
+			calculateCascadeSplits();
+		}
 
-		ImGui::Text("Cascade 2:");
-		ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[2], ImVec2(256, 256));
+		//depth image
+		ImGui::Separator(); 
+		for (int i = 0; i < debug.num_cascades; i++) 
+		{
+			ImGui::Text("Cascade %d:", i);
+			ImGui::Image((ImTextureID)(intptr_t)depthBuffer.cascadeVisualizationTextures[i], ImVec2(256, 256));
+		}
 	}
 	ImGui::Separator();
 	if (ImGui::CollapsingHeader("Lighting"))

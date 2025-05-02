@@ -30,7 +30,7 @@ uniform bool use_pcf;
 
 //cascade data
 uniform int cascade_count;
-uniform float cascade_splits[3];
+uniform float cascade_splits[8];
 uniform float far_clip_plane;
 
 uniform bool visualize_cascades;
@@ -41,18 +41,23 @@ uniform Light _Light;
 
 //ins
 in vec3 vs_frag_world_position;
-in vec4 vs_frag_light_position[3]; 
+in vec4 vs_frag_light_position[8]; 
 in vec3 vs_normal;
 in vec2 vs_texcoord;
 
 vec3 getCascadeColor(int cascadeIndex) 
 {
     //distinct colors for each cascade
-    vec3 colors[3] = vec3[]
+    vec3 colors[8] = vec3[]
     (
         vec3(1.0, 0.3, 0.3),  // red for cascade 0
         vec3(0.3, 1.0, 0.3),  // green for cascade 1
-        vec3(0.3, 0.3, 1.0)   // blue for cascade 2
+        vec3(0.3, 0.3, 1.0),  // blue for cascade 2
+        vec3(1.0, 1.0, 0.3),  // yellow for cascade 3
+        vec3(1.0, 0.3, 1.0),  // magenta for cascade 4
+        vec3(0.3, 1.0, 1.0),  // cyan for cascade 5
+        vec3(0.7, 0.7, 0.7),  // light gray for cascade 6
+        vec3(0.5, 0.5, 0.8)   // slate blue for cascade 7
     );
 
     return colors[cascadeIndex];
@@ -134,7 +139,8 @@ void main()
             cascadeIndex = i + 1;
         }
     }
-    
+    cascadeIndex = min(cascadeIndex, cascade_count - 1);
+
     //calc shadow
     float shadow = shadow_calculation(cascadeIndex, vs_frag_light_position[cascadeIndex], normal, lightDir);
     
